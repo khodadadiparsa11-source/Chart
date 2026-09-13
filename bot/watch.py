@@ -88,7 +88,12 @@ WORKERS = int(env("WORKERS", "8"))   # symbols fetched at once
 MIN_BASE, MAX_BASE = 1, 5        # his own count: one to five candles
 BASE_TIGHT = 0.60                # base candle range vs the recent normal range
 BASE_VOL = 2.00                  # base volume vs the recent normal volume
-EXIT_RANGE = float(env("EXIT_RANGE", "2.00"))   # exit candle range vs normal
+EXIT_RANGE = float(env("EXIT_RANGE", "1.50"))   # exit candle range vs normal.
+                                 # The close already has to clear the band by a
+                                 # full base height, which is what "it left"
+                                 # actually means; the raw range was a third
+                                 # test of the same property, and at 2.0 it was
+                                 # halving the survivors on its own.
 EXIT_VOL = 1.50                  # exit candle volume vs normal
 EXIT_CLEAR = 1.00                # how far past the base the exit must close,
                                  # measured in base heights
@@ -549,13 +554,15 @@ def scan(symbol):
                 continue
             stats["arrived"] += 1
             z["span"] = (z["exit"] - z["start"] + 1) * (ks[1]["t"] - ks[0]["t"])
-            # Required, not a bonus: a level only one timeframe can see is a
-            # level only one timeframe will respect.
+            # Counted, not required. He asked for every timeframe to be
+            # checked; requiring two of them to hold the same band at the same
+            # moment was my own addition, and with two live zones in the whole
+            # liquid market it is a gate nothing can pass. It is worth points
+            # instead, and the score floor decides.
             agree = [otf for otf, (_, ozs) in found.items()
                      if otf != tf and any(overlaps(z, o) for o in ozs)]
-            if not agree:
-                continue
-            stats["agreed"] += 1
+            if agree:
+                stats["agreed"] += 1
             pts = score(z, len(agree), None)
             if pts + 2 < MIN_SCORE:      # even a perfect delta cannot save it
                 continue
