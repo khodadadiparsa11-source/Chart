@@ -69,7 +69,7 @@ def env(name, default):
 # Empty means "rank the market by turnover and take the top TOP_N"; a list here
 # overrides that and watches exactly those.
 SYMBOLS = [s.strip().upper() for s in env("SYMBOLS", "").split(",") if s.strip()]
-TOP_N = int(env("TOP_N", "100"))
+TOP_N = int(env("TOP_N", "200"))
 
 # Scanned on four timeframes; alerted on three. A 5m zone on crypto is noise
 # more often than it is a level, so 5m is read only as agreement for a bigger
@@ -151,6 +151,13 @@ def get_json(path):
                                          headers={"User-Agent": "volume-watch"})
             with urllib.request.urlopen(req, timeout=25) as r:
                 return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            last = e
+            # 429 is "slow down" and 418 is "you did not slow down". Rolling
+            # straight on to the next host would be exactly the wrong answer,
+            # and a ban costs far more than a pause.
+            if e.code in (418, 429):
+                time.sleep(3)
         except Exception as e:      # noqa: BLE001 - any failure means try the next host
             last = e
     raise RuntimeError("all Binance hosts failed: %s" % last)
