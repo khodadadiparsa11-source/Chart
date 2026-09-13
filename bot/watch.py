@@ -88,7 +88,7 @@ WORKERS = int(env("WORKERS", "8"))   # symbols fetched at once
 MIN_BASE, MAX_BASE = 1, 5        # his own count: one to five candles
 BASE_TIGHT = 0.60                # base candle range vs the recent normal range
 BASE_VOL = 2.00                  # base volume vs the recent normal volume
-EXIT_RANGE = 2.00                # exit candle range vs normal
+EXIT_RANGE = float(env("EXIT_RANGE", "2.00"))   # exit candle range vs normal
 EXIT_VOL = 1.50                  # exit candle volume vs normal
 EXIT_CLEAR = 1.00                # how far past the base the exit must close,
                                  # measured in base heights
@@ -264,6 +264,11 @@ def mean(xs):
 
 FUNNEL = ("base", "volume", "exit", "clear", "fresh", "impulse")
 
+# The exit gate is where almost everything dies, so each run also counts what
+# WOULD have passed at other thresholds. Changing a number to see what happens
+# is guessing; reading how many candidates sit just outside it is measuring.
+EXIT_TRIALS = (1.2, 1.5, 1.8, 2.0, 2.5)
+
 
 def find_zones(ks, tf, funnel=None):
     """Base -> exit -> run -> untouched since. Returns the zones still live.
@@ -320,6 +325,10 @@ def find_zones(ks, tf, funnel=None):
         ex = ks[i + 1]
         exr = (ex["h"] - ex["l"]) / nrng
         exv = ex["v"] / nvol
+        if exv >= EXIT_VOL:
+            for t in EXIT_TRIALS:
+                if exr >= t:
+                    tick("exit@%.1f" % t)
         if exr < EXIT_RANGE or exv < EXIT_VOL:
             continue
         tick("exit")
@@ -713,6 +722,9 @@ def main():
                                         totals["arrived"], totals["agreed"],
                                         totals["scored"]))
     print("gates: " + "  ".join("%s=%d" % (k, funnel.get(k, 0)) for k in FUNNEL))
+    print("exit gate at other thresholds: "
+          + "  ".join("%.1fx=%d" % (t, funnel.get("exit@%.1f" % t, 0))
+                      for t in EXIT_TRIALS))
 
     # When Bitcoin moves, a hundred pairs move with it. Ranking first and
     # sending only the best keeps a correlated hour from emptying itself into
