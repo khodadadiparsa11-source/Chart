@@ -826,7 +826,8 @@ def main():
         # is the difference between a level someone defended and a level price
         # merely passed.
         if (z["side"] == "demand" and d > -0.10) or (z["side"] == "supply" and d < 0.10):
-            print("%s %s: flow agreed with the exit, skipped" % (sym, z["tf"]))
+            print("%s %s %s: flow agreed with the exit (delta %+.2f), skipped"
+                  % (sym, z["tf"], z["side"], d))
             continue
         pts = score(z, len(c["agree"]), d)
         if pts < MIN_SCORE:
