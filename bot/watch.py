@@ -96,10 +96,13 @@ MIN_IMPULSE = 3.00               # how far price ran from the zone afterwards,
                                  # in base heights, before coming back
 NEAR = float(env("NEAR", "0.0005"))   # 0.05% counts as "arrived"
 LOOKBACK = 20                    # candles forming "normal"
-SCAN = 100                       # candles per request: 100 is the largest size
-                                 # Binance still charges a single unit of
-                                 # weight for, and 400 of those a run is well
-                                 # inside the limit.
+SCAN = 200                       # A zone is only findable while it is still
+                                 # inside the window, and at 100 candles a
+                                 # perfectly good level an hour older than that
+                                 # is invisible. Two hundred costs one extra
+                                 # unit of weight per request -- 800 a run,
+                                 # still a fraction of what is allowed -- and
+                                 # loosens no rule at all.
 
 # Judging an alert afterwards: from the moment price arrived, did it leave the
 # band by a full zone height before trading a full zone height through it?
@@ -259,7 +262,7 @@ def mean(xs):
     return sum(xs) / len(xs) if xs else 0.0
 
 
-FUNNEL = ("base", "volume", "exit", "clear", "impulse", "fresh")
+FUNNEL = ("base", "volume", "exit", "clear", "fresh", "impulse")
 
 
 def find_zones(ks, tf, funnel=None):
@@ -348,7 +351,7 @@ def find_zones(ks, tf, funnel=None):
             run_far = max(run_far, far / height)
         if spent:
             continue
-        # (counted below, once the impulse gate has had its say)
+        tick("fresh")
 
         # A zone that never moved price is a zone with nothing behind it. This
         # one has to have already produced a run of several base heights before
@@ -357,7 +360,6 @@ def find_zones(ks, tf, funnel=None):
         if imp < MIN_IMPULSE:
             continue
         tick("impulse")
-        tick("fresh")
 
         zones.append({
             "tf": tf, "side": side, "top": top, "bot": bot,
