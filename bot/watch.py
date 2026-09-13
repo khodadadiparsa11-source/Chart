@@ -52,22 +52,28 @@ SYMBOLS = [s.strip().upper() for s in
            env("SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,PAXGUSDT").split(",")
            if s.strip()]
 
+# Scanned on four timeframes; alerted on three. A 5m zone on crypto is noise
+# more often than it is a level, so 5m is read only as agreement for a bigger
+# zone -- it never raises an alert of its own.
 TFS = ["5m", "15m", "1h", "4h"]
+ALERT_TFS = ["15m", "1h", "4h"]
 TF_WEIGHT = {"5m": 0, "15m": 1, "1h": 2, "4h": 3}
 FINER = {"5m": "1m", "15m": "1m", "1h": "5m", "4h": "15m"}
 
-MIN_SCORE = float(env("MIN_SCORE", "7"))      # out of 10
-COOLDOWN_MIN = int(env("COOLDOWN_MIN", "60"))  # per symbol
-MAX_PER_RUN = int(env("MAX_PER_RUN", "3"))
+MIN_SCORE = float(env("MIN_SCORE", "8"))       # out of 10
+COOLDOWN_MIN = int(env("COOLDOWN_MIN", "180"))  # per symbol
+MAX_PER_RUN = int(env("MAX_PER_RUN", "2"))
 
 MIN_BASE, MAX_BASE = 1, 5        # his own count: one to five candles
-BASE_TIGHT = 0.70                # base candle range vs the recent normal range
-BASE_VOL = 1.50                  # base volume vs the recent normal volume
-EXIT_RANGE = 1.60                # exit candle range vs normal
-EXIT_VOL = 1.30                  # exit candle volume vs normal
-EXIT_CLEAR = 0.80                # how far past the base the exit must close,
+BASE_TIGHT = 0.60                # base candle range vs the recent normal range
+BASE_VOL = 2.00                  # base volume vs the recent normal volume
+EXIT_RANGE = 2.00                # exit candle range vs normal
+EXIT_VOL = 1.50                  # exit candle volume vs normal
+EXIT_CLEAR = 1.00                # how far past the base the exit must close,
                                  # measured in base heights
-NEAR = float(env("NEAR", "0.0015"))   # 0.15% counts as "arrived"
+MIN_IMPULSE = 3.00               # how far price ran from the zone afterwards,
+                                 # in base heights, before coming back
+NEAR = float(env("NEAR", "0.0005"))   # 0.05% counts as "arrived"
 LOOKBACK = 20                    # candles forming "normal"
 SCAN = 200                       # candles searched per timeframe
 
@@ -243,6 +249,7 @@ def find_zones(ks, tf):
         # not have traded back into the band. The newest candle is excluded --
         # that touch is the alert itself.
         spent = False
+        run_far = 0.0
         for k in ks[i + 2:n - 1]:
             if k["l"] <= top and k["h"] >= bot:
                 spent = True
@@ -253,13 +260,23 @@ def find_zones(ks, tf):
             if side == "supply" and k["c"] > top:
                 spent = True
                 break
+            far = (k["h"] - top) if side == "demand" else (bot - k["l"])
+            run_far = max(run_far, far / height)
         if spent:
+            continue
+
+        # A zone that never moved price is a zone with nothing behind it. This
+        # one has to have already produced a run of several base heights before
+        # price came back to it -- it has shown once that it can turn price.
+        imp = max(run_far, ((ex["c"] - top) if side == "demand" else (bot - ex["c"])) / height)
+        if imp < MIN_IMPULSE:
             continue
 
         zones.append({
             "tf": tf, "side": side, "top": top, "bot": bot,
             "start": i - run + 1, "exit": i + 1, "bars": run,
             "formed": base[0]["t"], "bvol": bvol, "exr": exr, "exv": exv,
+            "imp": imp,
             "tight": mean(rng[i - run + 1:i + 1]) / nrng,
         })
     return zones
@@ -419,12 +436,18 @@ def examine(symbol, state, now_ms):
 
     best = None
     for tf, (ks, zs) in found.items():
+        if tf not in ALERT_TFS:
+            continue
         for z in zs:
             if not price_arrived(z, price):
                 continue
             z["span"] = (z["exit"] - z["start"] + 1) * (ks[1]["t"] - ks[0]["t"])
+            # Required, not a bonus: a level only one timeframe can see is a
+            # level only one timeframe will respect.
             agree = [otf for otf, (_, ozs) in found.items()
                      if otf != tf and any(overlaps(z, o) for o in ozs)]
+            if not agree:
+                continue
             pts = score(z, len(agree), None)
             if pts + 2 < MIN_SCORE:          # even a perfect delta cannot save it
                 continue
@@ -436,6 +459,12 @@ def examine(symbol, state, now_ms):
 
     z, pts, agree, ks = best
     d = base_delta(symbol, z)
+    # Also required: the flow inside the base must have pointed the OPPOSITE way
+    # from the exit. Sellers were being filled and price still rose -- that is
+    # the difference between a level someone defended and a level price passed.
+    if (z["side"] == "demand" and d > -0.10) or (z["side"] == "supply" and d < 0.10):
+        print("%s %s zone: flow agreed with the exit, skipped" % (symbol, z["tf"]))
+        return None
     pts = score(z, len(agree), d)
     if pts < MIN_SCORE:
         return None
@@ -466,6 +495,7 @@ def caption(symbol, z, pts, agree, price):
         "قیمت الان <code>{price}</code> — رسیده به محدوده\n\n"
         "بیس: <b>{bars}</b> کندل، حجم <b>{bvol:.1f}x</b> نرمال، طول <b>{tight:.0%}</b> نرمال\n"
         "خروج: طول <b>{exr:.1f}x</b>، حجم <b>{exv:.1f}x</b>\n"
+        "حرکتی که از این محدوده گرفت: <b>{imp:.1f} برابر</b> ارتفاع محدوده\n"
         "جریان داخل بیس: <b>{flow}</b> ({dp:.0f}٪) — تقریبی\n"
         "{agree}\n"
         "<a href=\"{url}\">باز کردن چارت</a>\n\n"
@@ -473,7 +503,7 @@ def caption(symbol, z, pts, agree, price):
     ).format(a=arrow, sym=symbol, kind=kind, pts=int(round(pts)), tf=z["tf"],
              bot=fmt(z["bot"]), top=fmt(z["top"]), price=fmt(price),
              bars=z["bars"], bvol=z["bvol"], tight=z["tight"],
-             exr=z["exr"], exv=z["exv"], flow=flow, dp=abs(d) * 100,
+             exr=z["exr"], exv=z["exv"], imp=z["imp"], flow=flow, dp=abs(d) * 100,
              agree=("تایم‌فریم‌های هم‌جهت: <b>%s</b>" % ", ".join(agree))
                    if agree else "بدون هم‌پوشانی با تایم‌فریم دیگر",
              url=CHART_URL)
@@ -481,8 +511,9 @@ def caption(symbol, z, pts, agree, price):
 
 def main():
     if os.environ.get("TEST") == "1":
-        send_text("✅ ربات وصل است.\nنمادها: %s\nتایم‌فریم‌ها: %s\nحداقل امتیاز: %g/10"
-                  % (", ".join(SYMBOLS), ", ".join(TFS), MIN_SCORE))
+        send_text("✅ ربات وصل است.\nنمادها: %s\nهشدار روی: %s (۵م فقط برای تایید)\n"
+                  "حداقل امتیاز: %g/10\nروزها ممکنه ساکت باشه — همینه که قرار بود باشه."
+                  % (", ".join(SYMBOLS), ", ".join(ALERT_TFS), MIN_SCORE))
         return
 
     state = load_state()

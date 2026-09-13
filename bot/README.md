@@ -5,16 +5,33 @@ message only when price has **come back** to a zone worth an order — with a
 picture of the chart, a box around the zone, a score out of ten, and the symbol
 name.
 
+It is built to stay quiet. Every gate below is required, not scored: a
+candidate failing any one of them is dropped, never softened into a weaker
+alert. Silent days are the design working.
+
 ## What it calls a zone
 
 Three things together, never one on its own:
 
-1. **A base** — one to five candles whose range is small against the recent
-   normal while their volume is well above it. Money moved, price did not.
-2. **An exit** — the next candle leaves the base with a wide range and volume of
-   its own, closing clear of it.
-3. **Silence since** — price has not traded back through. A zone that has
+1. **A base** — one to five candles whose range is under 60% of the recent
+   normal while their volume is at least double it. Money moved, price did not.
+2. **An exit** — the next candle leaves the base with twice the normal range
+   and half again the normal volume, closing a full base height clear of it.
+3. **A run** — price then travelled at least three base heights away. A zone
+   that never moved price has nothing behind it.
+4. **Silence since** — price has not traded back through. A zone that has
    already been revisited is spent and is dropped, not alerted.
+5. **Agreement** — another timeframe holds a zone in the same direction at the
+   same prices. A level only one timeframe can see is a level only one
+   timeframe will respect.
+6. **Flow against the exit** — the aggressor split inside the base points the
+   OPPOSITE way from where price left. Sellers were being filled and price rose
+   anyway. This is the difference between a level someone defended and a level
+   price merely passed through.
+
+Alerts are raised on **15m, 1h and 4h** only. 5m is read for agreement and
+never raises an alert of its own: on crypto a 5m zone is noise more often than
+it is a level.
 
 The alert is sent when price **returns** to the band, because that is the moment
 an order would be placed, not when the zone was formed.
@@ -44,8 +61,9 @@ has been backtested.
    Secrets, not variables: a token in a variable is a token in plain sight.
 4. **Optional settings** under the *Variables* tab of the same page:
    - `SYMBOLS` — default `BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,PAXGUSDT`
-   - `MIN_SCORE` — default `7`. Lower it for more messages, raise it for fewer.
-   - `COOLDOWN_MIN` — default `60`; at most one alert per symbol in that window.
+   - `MIN_SCORE` — default `8`. Raise it to `9` for stricter still. Lowering it
+     does not find more of the same setup; it starts admitting a looser one.
+   - `COOLDOWN_MIN` — default `180`; at most one alert per symbol in that window.
 5. **Test it.** Actions → *zone watch* → Run workflow → tick the test box.
 
 ## What it will and will not do
