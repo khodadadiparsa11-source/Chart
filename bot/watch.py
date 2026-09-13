@@ -259,8 +259,21 @@ def mean(xs):
     return sum(xs) / len(xs) if xs else 0.0
 
 
-def find_zones(ks, tf):
-    """Base -> exit -> run -> untouched since. Returns the zones still live."""
+FUNNEL = ("base", "volume", "exit", "clear", "impulse", "fresh")
+
+
+def find_zones(ks, tf, funnel=None):
+    """Base -> exit -> run -> untouched since. Returns the zones still live.
+
+    `funnel` counts how many candidates each gate let through. Six mandatory
+    gates can be silent because the market is, or because one of them is
+    unsatisfiable by construction -- and from a run that only prints "nothing"
+    those two are the same sentence. They are not the same bug.
+    """
+    def tick(stage):
+        if funnel is not None:
+            funnel[stage] = funnel.get(stage, 0) + 1
+
     n = len(ks)
     zones = []
     rng = [k["h"] - k["l"] for k in ks]
@@ -287,6 +300,7 @@ def find_zones(ks, tf):
             j -= 1
         if run < MIN_BASE or run > MAX_BASE:
             continue
+        tick("base")
 
         base = ks[i - run + 1:i + 1]
         top = max(k["h"] for k in base)
@@ -298,12 +312,14 @@ def find_zones(ks, tf):
         bvol = sum(k["v"] for k in base) / (run * nvol)
         if bvol < BASE_VOL:
             continue                                 # quiet base: nothing filled
+        tick("volume")
 
         ex = ks[i + 1]
         exr = (ex["h"] - ex["l"]) / nrng
         exv = ex["v"] / nvol
         if exr < EXIT_RANGE or exv < EXIT_VOL:
             continue
+        tick("exit")
 
         if ex["c"] >= top + EXIT_CLEAR * height:
             side = "demand"
@@ -311,6 +327,7 @@ def find_zones(ks, tf):
             side = "supply"
         else:
             continue                                 # it did not really leave
+        tick("clear")
 
         # Spent zones are dropped, not alerted: the candles after the exit must
         # not have traded back into the band. The newest candle is excluded --
@@ -331,6 +348,7 @@ def find_zones(ks, tf):
             run_far = max(run_far, far / height)
         if spent:
             continue
+        # (counted below, once the impulse gate has had its say)
 
         # A zone that never moved price is a zone with nothing behind it. This
         # one has to have already produced a run of several base heights before
@@ -338,6 +356,8 @@ def find_zones(ks, tf):
         imp = max(run_far, ((ex["c"] - top) if side == "demand" else (bot - ex["c"])) / height)
         if imp < MIN_IMPULSE:
             continue
+        tick("impulse")
+        tick("fresh")
 
         zones.append({
             "tf": tf, "side": side, "top": top, "bot": bot,
@@ -494,6 +514,8 @@ def scan(symbol):
     that never passes anything -- these say which gate the candidates died at.
     """
     stats = {"zones": 0, "arrived": 0, "agreed": 0, "scored": 0}
+    funnel = {}
+    stats["funnel"] = funnel
     found = {}
     price = None
     for tf in TFS:
@@ -502,7 +524,7 @@ def scan(symbol):
             continue
         if price is None:
             price = ks[-1]["c"]
-        found[tf] = (ks, find_zones(ks, tf))
+        found[tf] = (ks, find_zones(ks, tf, funnel))
     if price is None:
         return [], {}, stats
 
@@ -670,6 +692,7 @@ def main():
             return sym, None
 
     candidates = []
+    funnel = {}
     totals = {"zones": 0, "arrived": 0, "agreed": 0, "scored": 0}
     with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
         for sym, got in pool.map(work, symbols):
@@ -680,11 +703,14 @@ def main():
             candidates.extend(found)
             for k in totals:
                 totals[k] += stats[k]
+            for k, v in stats["funnel"].items():
+                funnel[k] = funnel.get(k, 0) + v
 
     print("scanned %d symbols: %d live zone(s), %d at price, %d with agreement, "
           "%d above the score floor" % (len(symbols), totals["zones"],
                                         totals["arrived"], totals["agreed"],
                                         totals["scored"]))
+    print("gates: " + "  ".join("%s=%d" % (k, funnel.get(k, 0)) for k in FUNNEL))
 
     # When Bitcoin moves, a hundred pairs move with it. Ranking first and
     # sending only the best keeps a correlated hour from emptying itself into
