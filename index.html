@@ -102,7 +102,7 @@
 
 <footer>
   <span>بایننس — حجم واقعی <span id="dot" class="dot"></span><span id="state">…</span></span>
-  <span><span id="tfNote"></span> <span style="opacity:.55">v6 · اپ</span></span>
+  <span><span id="tfNote"></span> <span style="opacity:.55">v7 · فوت‌پرینت کامل</span></span>
 </footer>
 
 <script>
@@ -166,7 +166,15 @@ function saveLevels(){ try{ localStorage.setItem(LKEY(), JSON.stringify(levels))
 // Real order flow. Binance flags every trade with which side was the aggressor,
 // so buying and selling are counted rather than guessed from candle colour the
 // way every other tool here has had to. Keyed by the bar's bucket time.
-let flow = new Map();      // time -> {buy, sell, lv:Map(priceLevel -> {b,s})}
+let flow = new Map();      // time -> {buy, sell, lv:Map(priceLevel -> {b,s})}  exact
+// Downloading every trade behind fifty five-minute candles means half a million
+// records and hundreds of requests, which a browser will not do. One-second
+// klines cover the same ground in a handful of requests: a price and a volume
+// for every second, with the side inferred from that second's direction. Less
+// precise than counting aggressors, far better than an empty chart — and the
+// exact figures overwrite it wherever real trades exist.
+let approx = new Map();
+let approxKey = '', approxBusy = false;
 let tws = null, twsTimer = null, lvlTick = 1;
 
 function barSeconds(){
@@ -279,7 +287,7 @@ function render(){
     dispTick = Math.max(lvlTick, niceStep((hi-lo)/26));
     fpRows = new Map();
     for (let i=start;i<end;i++){
-      const e = flow.get(bars[i].time);
+      const e = flow.get(bars[i].time) || approx.get(bars[i].time);
       if (!e || !e.lv.size) continue;
       const g = new Map();
       for (const [L, c] of e.lv){
@@ -352,7 +360,7 @@ function render(){
 
   // volume, tinted by real delta where the flow is known
   for (let i=start;i<end;i++){
-    const bb = bars[i], cx = x(i), e = flow.get(bb.time);
+    const bb = bars[i], cx = x(i), e = flow.get(bb.time) || approx.get(bb.time);
     let col;
     if (isHot(i)) col = '#ff9f0a';
     else if (deltaOn && e && (e.buy || e.sell))
@@ -402,9 +410,13 @@ function render(){
   }
 
   if (fpOn){
-    const need = bw < 9 && flow.size > 0;
+    const need = bw < 9 && (flow.size || approx.size);
     $('fpBtn').textContent = need ? 'فوت‌پرینت ⤢' : 'فوت‌پرینت';
-    $('fpBtn').title = need ? 'برای دیدن، دو انگشتی زوم کن' : '';
+    let exact = 0;
+    for (let i=start;i<end;i++) if (flow.has(bars[i].time)) exact++;
+    $('tfNote').textContent = exact
+      ? exact + ' کندل دقیق از ' + n
+      : (tf.fold > 1 ? 'ساخته‌شده از کندل ۱ ثانیه‌ای' : '');
   } else $('fpBtn').textContent = 'فوت‌پرینت';
 
   // crosshair, with the value it is pointing at written on each axis
@@ -448,7 +460,7 @@ function showStats(i){
   $('rvol').textContent = rv ? rv.toFixed(2)+'x' : '—';
   $('rvol').className = rv && rv>=HOT_MULT ? 'hot' : '';
   $('cvol').textContent = shortVol(b.volume);
-  const e = flow.get(b.time);
+  const e = flow.get(b.time) || approx.get(b.time);
   if (e && (e.buy || e.sell)){
     const d = e.buy - e.sell;
     $('dlt').textContent = (d >= 0 ? '+' : '') + shortVol(Math.abs(d)).replace('-','');
@@ -476,6 +488,8 @@ function clampView(){
 // After a flick the chart keeps moving and settles, the way a scroll view does.
 // Without it every pan stops dead the instant the finger lifts, which is the
 // single thing that makes a homemade chart feel homemade.
+let approxTimer = null;
+function scheduleApprox(){ clearTimeout(approxTimer); approxTimer = setTimeout(fillApprox, 350); }
 function stopGlide(){ if (glide){ cancelAnimationFrame(glide); glide = null; } }
 function startGlide(){
   stopGlide();
@@ -547,7 +561,7 @@ $('wrap').addEventListener('touchmove', e => {
 
 $('wrap').addEventListener('touchend', () => {
   if (drag && Math.abs(drag.vx) > 0.5){ vel = drag.vx; startGlide(); }
-  pinch = null; drag = null; savePrefs();
+  pinch = null; drag = null; savePrefs(); scheduleApprox();
 }, {passive:true});
 
 cv.addEventListener('mousemove', e => {
@@ -563,7 +577,7 @@ cv.addEventListener('click', e => {
 });
 $('wrap').addEventListener('wheel', e => {
   view.count *= e.deltaY > 0 ? 1.12 : 0.89;
-  clampView(); render(); savePrefs(); e.preventDefault();
+  clampView(); render(); savePrefs(); scheduleApprox(); e.preventDefault();
 }, {passive:false});
 
 // ─── Folding ────────────────────────────────────────────────────────────────
@@ -693,6 +707,49 @@ function connectTrades(){
 }
 // One batch of recent trades so the newest bars have flow immediately; older
 // bars fill in as the stream runs. Binance only serves the last 1000 this way.
+async function fillApprox(){
+  if (!fpOn || approxBusy || !bars.length) return;
+  const {start, end} = visible();
+  const key = symbol+'|'+tf.id+'|'+bars[start].time+'|'+bars[end-1].time;
+  if (key === approxKey) return;
+  approxBusy = true;
+  try{
+    const step = barSeconds();
+    const fromMs = bars[start].time*1000;
+    const toMs   = (bars[end-1].time + step)*1000;
+    const host = HOSTS[hostIdx];
+    const m = new Map();
+    let cursor = fromMs, pages = 0;
+    while (cursor < toMs && pages < 14){
+      const res = await fetch(host+'/api/v3/klines?symbol='+symbol+'&interval=1s&limit=1000'+
+                              '&startTime='+cursor+'&endTime='+toMs, {cache:'no-store'});
+      if (!res.ok) break;
+      const arr = await res.json();
+      if (!arr.length) break;
+      for (const a of arr){
+        const sec = Math.floor(a[0]/1000), b = tradeBucket(sec);
+        const close = +a[4], open = +a[1], vol = +a[5];
+        if (!vol) continue;
+        let e = m.get(b);
+        if (!e){ e = {buy:0, sell:0, lv:new Map()}; m.set(b, e); }
+        const sell = close < open;
+        if (sell) e.sell += vol; else e.buy += vol;
+        const L = Math.floor(close/lvlTick)*lvlTick;
+        let c = e.lv.get(L);
+        if (!c){ c = {b:0, s:0}; e.lv.set(L, c); }
+        if (sell) c.s += vol; else c.b += vol;
+      }
+      cursor = arr[arr.length-1][0] + 1000;
+      pages++;
+      if (pages % 3 === 0) { approx = m; render(); }
+    }
+    approx = m;
+    approxKey = key;
+    render();
+  } catch(e){ /* the chart stands without it */ }
+  approxBusy = false;
+}
+
 async function seedTrades(pages){
   const host = HOSTS[hostIdx];
   try{
@@ -728,7 +785,9 @@ async function reload(){
     showStats(bars.length-1);
     connect();
     connectTrades();
-    await seedTrades(tf.base === '1s' ? 6 : 10);
+    approx = new Map(); approxKey = '';
+    fillApprox();
+    await seedTrades(tf.base === '1s' ? 6 : 12);
     render();
   }
 }
@@ -763,7 +822,8 @@ $('hotBtn').onclick = () => { highlight = !highlight;
 $('dBtn').onclick = () => { deltaOn = !deltaOn;
   $('dBtn').className = deltaOn ? 'on' : ''; savePrefs(); render(); };
 $('fpBtn').onclick = () => { fpOn = !fpOn;
-  $('fpBtn').className = fpOn ? 'on' : ''; savePrefs(); render(); };
+  $('fpBtn').className = fpOn ? 'on' : ''; savePrefs(); render();
+  if (fpOn) fillApprox(); };
 $('lineBtn').onclick = () => { lineMode = !lineMode;
   $('lineBtn').className = lineMode ? 'on' : '';
   $('lineBtn').textContent = lineMode ? 'خط ✓' : 'خط'; };
