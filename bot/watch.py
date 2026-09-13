@@ -83,6 +83,15 @@ MIN_SCORE = float(env("MIN_SCORE", "8"))        # out of 10
 COOLDOWN_MIN = int(env("COOLDOWN_MIN", "180"))  # per symbol
 MAX_PER_RUN = int(env("MAX_PER_RUN", "3"))
 DAILY_CAP = int(env("DAILY_CAP", "12"))
+
+# Candidates that reached the last gate and failed it, sent separately and
+# labelled as NOT signals. He has never seen one of these, and he is the one
+# who can look at a chart and say whether the shape is real -- waiting days for
+# a passing zone teaches neither of us anything in the meantime. They are kept
+# off the alert channel and tallied in their own column, so the strict system
+# is never quietly replaced by the loose one.
+REVIEW_CAP = int(env("REVIEW_CAP", "3"))
+MAX_DELTA_CALLS = 8              # per run, so a wide market cannot run long
 WORKERS = int(env("WORKERS", "8"))   # symbols fetched at once
 
 MIN_BASE, MAX_BASE = 1, 5        # his own count: one to five candles
@@ -640,7 +649,8 @@ def settle(state, symbol, by_tf):
                     break
             if not r.get("touched"):
                 if waited >= NEVER_AFTER:
-                    state["day"]["never"] = state["day"].get("never", 0) + 1
+                    bucket = ("r_" if r.get("review") else "") + "never"
+                    state["day"][bucket] = state["day"].get(bucket, 0) + 1
                     print("outcome %s %s %s -> never returned" % (symbol, r["tf"], r["side"]))
                     del state["open"][key]
                 continue
@@ -666,8 +676,13 @@ def settle(state, symbol, by_tf):
                 verdict = verdict or "flat"
                 break
         if verdict:
-            state["day"][verdict] = state["day"].get(verdict, 0) + 1
-            print("outcome %s %s %s -> %s" % (symbol, r["tf"], r["side"], verdict))
+            # Near misses are counted in their own column. Mixed into one tally
+            # they would quietly answer a different question than the one asked.
+            bucket = ("r_" if r.get("review") else "") + verdict
+            state["day"][bucket] = state["day"].get(bucket, 0) + 1
+            print("outcome %s %s %s -> %s%s" % (symbol, r["tf"], r["side"],
+                                                verdict,
+                                                " (review)" if r.get("review") else ""))
             del state["open"][key]
 
 
@@ -684,21 +699,37 @@ def daily_report(state, now):
         flat = day.get("flat", 0)
         never = day.get("never", 0)
         done = react + fail + flat + never
-        if sent or done:
+        rs = day.get("review", 0)
+        rreact = day.get("r_reacted", 0)
+        rfail = day.get("r_failed", 0)
+        rflat = day.get("r_flat", 0)
+        rnever = day.get("r_never", 0)
+        rdone = rreact + rfail + rflat + rnever
+        if sent or done or rs or rdone:
             waiting = sum(1 for r in state["open"].values() if not r.get("touched"))
             send_text(
                 "📋 <b>کارنامه‌ی {d}</b>\n\n"
-                "زون ارسالی: <b>{sent}</b>\n\n"
-                "قیمت برگشت و <b>واکنش داد</b>: <b>{react}</b>\n"
-                "قیمت برگشت و <b>رد شد</b>: <b>{fail}</b>\n"
+                "<b>زون‌های تایید شده</b>\n"
+                "ارسالی: <b>{sent}</b>\n"
+                "برگشت و واکنش داد: <b>{react}</b>\n"
+                "برگشت و رد شد: <b>{fail}</b>\n"
                 "برگشت ولی تکون نخورد: <b>{flat}</b>\n"
                 "اصلاً برنگشت: <b>{never}</b>\n\n"
+                "<b>نزدیک‌به‌قبولی‌ها (فقط بررسی)</b>\n"
+                "ارسالی: <b>{rs}</b>\n"
+                "برگشت و واکنش داد: <b>{rreact}</b>\n"
+                "برگشت و رد شد: <b>{rfail}</b>\n"
+                "برگشت ولی تکون نخورد: <b>{rflat}</b>\n"
+                "اصلاً برنگشت: <b>{rnever}</b>\n\n"
                 "هنوز منتظر برگشت قیمت: <b>{waiting}</b>\n\n"
-                "<i>«واکنش» یعنی قیمت به اندازه‌ی یک ارتفاعِ محدوده ازش دور شد "
-                "قبل از اینکه به همون اندازه ازش رد بشه. این یک اندازه‌گیریه، "
-                "نه وین‌ریت — استاپ و تارگت و اسپرد واقعی توش نیست.</i>"
+                "<i>دو ستون عمداً جدان. اگر ستون دوم به همان خوبی ستون اول بود، "
+                "یعنی آن فیلتر چیزی اضافه نمی‌کند و باید برداشته شود؛ اگر بدتر "
+                "بود، یعنی دارد کارش را می‌کند. عددها کم‌اند و هنوز چیزی را "
+                "ثابت نمی‌کنند. این اندازه‌گیری واکنش است، نه وین‌ریت.</i>"
                 .format(d=day.get("date"), sent=sent, react=react, fail=fail,
-                        flat=flat, never=never, waiting=waiting))
+                        flat=flat, never=never, rs=rs, rreact=rreact,
+                        rfail=rfail, rflat=rflat, rnever=rnever,
+                        waiting=waiting))
     state["day"] = {"date": today}
 
 
@@ -738,6 +769,30 @@ def caption(symbol, z, pts, agree, price):
 
 
 # ---------------------------------------------------------------- the run
+
+
+def review_caption(symbol, z, pts, agree, price, why):
+    """Labelled so it can never be mistaken for the real thing."""
+    kind = "تقاضا" if z["side"] == "demand" else "عرضه"
+    d = z.get("delta", 0.0)
+    edge = z["top"] if z["side"] == "demand" else z["bot"]
+    away = abs(price - edge) / price * 100
+    return (
+        "🔍 <b>برای بررسی — سیگنال نیست</b>\n\n"
+        "<b>{sym}</b> · {tf} · {kind}\n"
+        "محدوده <code>{bot} — {top}</code> · <b>{away:.2f}٪</b> فاصله\n"
+        "امتیاز {pts}/10\n\n"
+        "<b>چرا رد شد:</b> {why}\n"
+        "بیس: {bars} کندل، حجم <b>{bvol:.1f}x</b>، طول {tight:.0%} نرمال\n"
+        "خروج: طول {exr:.1f}x، حجم {exv:.1f}x، فشار {push:.1f} برابر\n"
+        "جریان داخل بیس: <code>{d:+.2f}</code>\n\n"
+        "<i>این زون از فیلترها رد نشده. روی چارت نگاهش کن و بهم بگو به چشم "
+        "خودت درسته یا نه — جوابت تصمیم می‌گیرد که آن فیلتر می‌ماند یا می‌رود. "
+        "با این معامله نکن مگر خودت تاییدش کنی.</i>"
+    ).format(sym=symbol, tf=z["tf"], kind=kind, bot=fmt(z["bot"]),
+             top=fmt(z["top"]), away=away, pts=int(round(pts)), why=why,
+             bars=z["bars"], bvol=z["bvol"], tight=z["tight"], exr=z["exr"],
+             exv=z["exv"], push=z["push"], d=d)
 
 
 def main():
@@ -808,8 +863,12 @@ def main():
     candidates.sort(key=lambda c: -c["pts"])
 
     sent = 0
+    checked = 0
+    near = []
     for c in candidates:
         if sent >= MAX_PER_RUN or state["day"].get("sent", 0) >= DAILY_CAP:
+            break
+        if checked >= MAX_DELTA_CALLS:
             break
         sym, z = c["symbol"], c["z"]
         key = "%s|%s|%s|%d" % (sym, z["tf"], z["side"], z["formed"])
@@ -819,24 +878,26 @@ def main():
             continue
 
         d = base_delta(sym, z)
+        checked += 1
         if d is None:
             continue
-        # Required: the flow inside the base must have pointed the OPPOSITE way
-        # from the exit. Sellers were being filled and price still rose -- that
-        # is the difference between a level someone defended and a level price
-        # merely passed.
-        if (z["side"] == "demand" and d > -0.10) or (z["side"] == "supply" and d < 0.10):
-            print("%s %s %s: flow agreed with the exit (delta %+.2f), skipped"
-                  % (sym, z["tf"], z["side"], d))
-            continue
-        pts = score(z, len(c["agree"]), d)
-        if pts < MIN_SCORE:
-            continue
         z["delta"] = d
+        pts = score(z, len(c["agree"]), d)
+        # The flow inside the base must point the OPPOSITE way from the exit:
+        # sellers being filled before a rise is the difference between a level
+        # someone defended and a level price merely passed.
+        flow_ok = (d <= -0.10) if z["side"] == "demand" else (d >= 0.10)
+
+        if not flow_ok or pts < MIN_SCORE:
+            near.append((pts, c, key,
+                         "جریان داخل بیس هم‌جهت خروج بود" if not flow_ok
+                         else "امتیاز زیر حد نصاب"))
+            print("%s %s %s: near miss (delta %+.2f, score %.0f)"
+                  % (sym, z["tf"], z["side"], d, pts))
+            continue
 
         png = draw(sym, c["ks"], z, pts, c["agree"])
         send_photo(png, caption(sym, z, pts, c["agree"], c["price"]))
-
         state["zones"][key] = now
         state["symbol_last"][sym] = now
         state["day"]["sent"] = state["day"].get("sent", 0) + 1
@@ -846,8 +907,25 @@ def main():
         sent += 1
         print("alerted %s %s %s %.1f" % (sym, z["tf"], z["side"], pts))
 
+    # The near misses, on their own channel and their own daily budget.
+    near.sort(key=lambda n: -n[0])
+    shown = 0
+    for pts, c, key, why in near:
+        if state["day"].get("review", 0) >= REVIEW_CAP or shown >= REVIEW_CAP:
+            break
+        sym, z = c["symbol"], c["z"]
+        png = draw(sym, c["ks"], z, pts, c["agree"])
+        send_photo(png, review_caption(sym, z, pts, c["agree"], c["price"], why))
+        state["zones"][key] = now
+        state["day"]["review"] = state["day"].get("review", 0) + 1
+        state["open"][key] = {"symbol": sym, "tf": z["tf"], "side": z["side"],
+                              "top": z["top"], "bot": z["bot"],
+                              "at": z["formed"], "pts": pts, "review": True}
+        shown += 1
+        print("review %s %s %s %.1f (%s)" % (sym, z["tf"], z["side"], pts, why))
+
     save_state(state)
-    print("done, %d alert(s), %d open" % (sent, len(state["open"])))
+    print("done, %d alert(s), %d for review, %d open" % (sent, shown, len(state["open"])))
 
 
 if __name__ == "__main__":

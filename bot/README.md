@@ -46,6 +46,23 @@ Alerts are raised on **15m, 1h and 4h** only. 5m is read for agreement and
 never raises an alert of its own: on crypto a 5m zone is noise more often than
 it is a level.
 
+## Near misses
+
+A candidate that reaches the last gate and fails it is sent separately, at most
+three a day, captioned **"for review — not a signal"** with the reason it was
+rejected and the raw numbers behind it.
+
+The point is not to trade them. It is that the strict system can go days
+without a passing zone, and the person who can look at a chart and say whether
+a shape is real has, in the meantime, nothing to look at. A near miss he judges
+by eye is worth more than another silent day.
+
+They are tallied in their own column, never mixed into the alert tally. If the
+near misses react as often as the passing zones, the filter that rejected them
+is not earning its place and should go; if they react less, it is doing its
+job. Loosening the real thresholds would have destroyed that comparison —
+there would be nothing left to compare against.
+
 ## Reading a quiet run
 
 Every run prints its funnel, so silence can be read instead of guessed at:
