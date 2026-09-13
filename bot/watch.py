@@ -48,9 +48,11 @@ that can.
 A score is a ranking, not a probability. Nothing here has been backtested.
 """
 
+import concurrent.futures
 import io
 import json
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -81,6 +83,7 @@ MIN_SCORE = float(env("MIN_SCORE", "8"))        # out of 10
 COOLDOWN_MIN = int(env("COOLDOWN_MIN", "180"))  # per symbol
 MAX_PER_RUN = int(env("MAX_PER_RUN", "3"))
 DAILY_CAP = int(env("DAILY_CAP", "12"))
+WORKERS = int(env("WORKERS", "8"))   # symbols fetched at once
 
 MIN_BASE, MAX_BASE = 1, 5        # his own count: one to five candles
 BASE_TIGHT = 0.60                # base candle range vs the recent normal range
@@ -112,6 +115,9 @@ HOSTS = ["https://data-api.binance.vision", "https://api.binance.com",
 # stablecoin pair has no move to react with. Neither can hold a zone.
 SKIP_SUFFIX = ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")
 SKIP_BASE = ("USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "EUR", "GBP", "AEUR")
+# Binance lists pairs whose base asset is written in Chinese characters. They
+# cannot go into a URL as they stand, and the whole symbol fails on encoding.
+PLAIN = re.compile(r"^[A-Z0-9]+$")
 
 # ---------------------------------------------------------------- plumbing
 
@@ -158,6 +164,8 @@ def liquid_symbols(n):
     for r in rows:
         s = r.get("symbol", "")
         if not s.endswith("USDT") or s.endswith(SKIP_SUFFIX):
+            continue
+        if not PLAIN.match(s):
             continue
         if s[:-4] in SKIP_BASE:
             continue
@@ -479,7 +487,13 @@ def fmt(p):
 
 
 def scan(symbol):
-    """Every live zone this symbol is currently sitting on. No state touched."""
+    """Every live zone this symbol is currently sitting on. No state touched.
+
+    The counts come back with it. Six mandatory gates can be silent for days,
+    and a run that only says "nothing" cannot tell a quiet market from a filter
+    that never passes anything -- these say which gate the candidates died at.
+    """
+    stats = {"zones": 0, "arrived": 0, "agreed": 0, "scored": 0}
     found = {}
     price = None
     for tf in TFS:
@@ -490,15 +504,17 @@ def scan(symbol):
             price = ks[-1]["c"]
         found[tf] = (ks, find_zones(ks, tf))
     if price is None:
-        return [], {}
+        return [], {}, stats
 
     out = []
     for tf, (ks, zs) in found.items():
         if tf not in ALERT_TFS:
             continue
+        stats["zones"] += len(zs)
         for z in zs:
             if not price_arrived(z, price):
                 continue
+            stats["arrived"] += 1
             z["span"] = (z["exit"] - z["start"] + 1) * (ks[1]["t"] - ks[0]["t"])
             # Required, not a bonus: a level only one timeframe can see is a
             # level only one timeframe will respect.
@@ -506,12 +522,14 @@ def scan(symbol):
                      if otf != tf and any(overlaps(z, o) for o in ozs)]
             if not agree:
                 continue
+            stats["agreed"] += 1
             pts = score(z, len(agree), None)
             if pts + 2 < MIN_SCORE:      # even a perfect delta cannot save it
                 continue
+            stats["scored"] += 1
             out.append({"symbol": symbol, "z": z, "agree": agree,
                         "pts": pts, "ks": ks, "price": price})
-    return out, {tf: ks for tf, (ks, _) in found.items()}
+    return out, {tf: ks for tf, (ks, _) in found.items()}, stats
 
 
 # ---------------------------------------------------------------- outcomes
@@ -640,17 +658,33 @@ def main():
     now = time.time()
     daily_report(state, now)
 
-    candidates = []
-    for sym in symbols:
+    # Four requests per symbol, four hundred a run: sequential, that outlasts
+    # the five-minute schedule and the runs start queueing behind each other.
+    # Eight at a time finishes inside a minute and still asks for a fraction of
+    # what the exchange allows.
+    def work(sym):
         try:
-            found, by_tf = scan(sym)
+            return sym, scan(sym)
         except Exception as e:      # noqa: BLE001 - one bad symbol must not stop the rest
             print("%s failed: %s" % (sym, e))
-            continue
-        settle(state, sym, by_tf)
-        candidates.extend(found)
+            return sym, None
 
-    print("scanned %d symbols, %d candidate(s) at price" % (len(symbols), len(candidates)))
+    candidates = []
+    totals = {"zones": 0, "arrived": 0, "agreed": 0, "scored": 0}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for sym, got in pool.map(work, symbols):
+            if not got:
+                continue
+            found, by_tf, stats = got
+            settle(state, sym, by_tf)
+            candidates.extend(found)
+            for k in totals:
+                totals[k] += stats[k]
+
+    print("scanned %d symbols: %d live zone(s), %d at price, %d with agreement, "
+          "%d above the score floor" % (len(symbols), totals["zones"],
+                                        totals["arrived"], totals["agreed"],
+                                        totals["scored"]))
 
     # When Bitcoin moves, a hundred pairs move with it. Ranking first and
     # sending only the best keeps a correlated hour from emptying itself into
