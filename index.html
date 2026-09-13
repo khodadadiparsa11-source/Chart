@@ -94,7 +94,7 @@
 
 <footer>
   <span>بایننس — حجم واقعی <span id="dot" class="dot"></span><span id="state">…</span></span>
-  <span><span id="tfNote"></span> <span style="opacity:.55">v4 · فوت‌پرینت</span></span>
+  <span><span id="tfNote"></span> <span style="opacity:.55">v5 · فوت‌پرینت</span></span>
 </footer>
 
 <script>
@@ -233,90 +233,97 @@ function render(){
     ctx.fillText(fmt(p, digits()), plotW+6, py);
   }
 
-  // candles
+  // Footprint is computed before the candles are drawn, because a bar that has
+  // one is drawn as an outline: filled bodies bury the cells underneath them,
+  // which is what made this unreadable.
   const body = Math.max(1, Math.min(bw*0.72, bw-1));
+  let fpRows = null, fpMax = 0, dispTick = 0, cellH = 0;
+  if (fpOn && bw >= 9){
+    dispTick = Math.max(lvlTick, niceStep((hi-lo)/26));
+    fpRows = new Map();
+    for (let i=start;i<end;i++){
+      const e = flow.get(bars[i].time);
+      if (!e || !e.lv.size) continue;
+      const g = new Map();
+      for (const [L, c] of e.lv){
+        const k = Math.floor(L/dispTick)*dispTick;
+        let z = g.get(k);
+        if (!z){ z = {b:0, s:0}; g.set(k, z); }
+        z.b += c.b; z.s += c.s;
+        const t = z.b + z.s;
+        if (t > fpMax) fpMax = t;
+      }
+      fpRows.set(i, g);
+    }
+    if (!fpRows.size || fpMax <= 0) fpRows = null;
+    else cellH = Math.max(2, Math.abs(y(0) - y(dispTick)) - 1);
+  }
+
+  // candles
   for (let i=start;i<end;i++){
-    const b = bars[i], cx = x(i), up = b.close >= b.open;
-    ctx.strokeStyle = ctx.fillStyle = up ? '#0bb07b' : '#e5484d';
+    const bb = bars[i], cx = x(i), up = bb.close >= bb.open;
+    const col = up ? '#0bb07b' : '#e5484d';
+    ctx.strokeStyle = col;
     ctx.beginPath();
-    ctx.moveTo(Math.round(cx)+0.5, y(b.high));
-    ctx.lineTo(Math.round(cx)+0.5, y(b.low));
+    ctx.moveTo(Math.round(cx)+0.5, y(bb.high));
+    ctx.lineTo(Math.round(cx)+0.5, y(bb.low));
     ctx.stroke();
-    const yo = y(b.open), yc = y(b.close);
+    const yo = y(bb.open), yc = y(bb.close);
     const top = Math.min(yo,yc), h = Math.max(1, Math.abs(yc-yo));
-    ctx.fillRect(cx-body/2, top, body, h);
+    if (fpRows && fpRows.has(i)){
+      ctx.lineWidth = 1;
+      ctx.strokeRect(Math.round(cx-body/2)+0.5, Math.round(top)+0.5, Math.round(body), Math.round(h));
+    } else {
+      ctx.fillStyle = col;
+      ctx.fillRect(cx-body/2, top, body, h);
+    }
+  }
+
+  // Footprint cells: selling grows left of the candle's centre, buying right,
+  // so the imbalance at a price reads as a shape rather than a shade.
+  if (fpRows){
+    const half = body/2;
+    const showNums = bw >= 54 && cellH >= 9;
+    ctx.font = Math.min(10, Math.max(7, cellH-2)) + 'px Vazirmatn, sans-serif';
+    ctx.textBaseline = 'middle';
+    for (const [i, g] of fpRows){
+      const cx = x(i);
+      for (const [L, c] of g){
+        const t = c.b + c.s;
+        if (!t) continue;
+        const yTop = y(L + dispTick);
+        if (yTop < -cellH || yTop > priceH + PAD_T) continue;
+        const share = Math.min(1, t/fpMax);
+        const ws = half * (c.s/t) * share, wb = half * (c.b/t) * share;
+        if (ws > 0.4){
+          ctx.fillStyle = 'rgba(229,72,77,' + (0.4 + 0.5*share).toFixed(2) + ')';
+          ctx.fillRect(cx - ws, yTop, ws, cellH);
+        }
+        if (wb > 0.4){
+          ctx.fillStyle = 'rgba(11,176,123,' + (0.4 + 0.5*share).toFixed(2) + ')';
+          ctx.fillRect(cx, yTop, wb, cellH);
+        }
+        if (showNums){
+          ctx.fillStyle = 'rgba(230,237,243,.9)';
+          ctx.textAlign = 'right'; ctx.fillText(shortVol(c.s), cx - 2, yTop + cellH/2);
+          ctx.textAlign = 'left';  ctx.fillText(shortVol(c.b), cx + 2, yTop + cellH/2);
+        }
+      }
+    }
+    ctx.textAlign = 'center';
   }
 
   // volume, tinted by real delta where the flow is known
   for (let i=start;i<end;i++){
-    const b = bars[i], cx = x(i), e = flow.get(b.time);
+    const bb = bars[i], cx = x(i), e = flow.get(bb.time);
     let col;
     if (isHot(i)) col = '#ff9f0a';
     else if (deltaOn && e && (e.buy || e.sell))
       col = e.buy >= e.sell ? 'rgba(11,176,123,.6)' : 'rgba(229,72,77,.6)';
-    else col = b.close >= b.open ? 'rgba(11,176,123,.35)' : 'rgba(229,72,77,.35)';
+    else col = bb.close >= bb.open ? 'rgba(11,176,123,.35)' : 'rgba(229,72,77,.35)';
     ctx.fillStyle = col;
-    const vt = vy(b.volume);
+    const vt = vy(bb.volume);
     ctx.fillRect(cx-body/2, vt, body, plotH-vt);
-  }
-
-  // Footprint: what traded at each price inside the candle, split by which side
-  // was the aggressor. Selling grows left of the candle's centre, buying right,
-  // so the imbalance at a price is a shape rather than a shade. Rows are
-  // regrouped to the zoom level, because a fixed row height is either invisible
-  // or unreadable depending on how far in you are.
-  if (fpOn && bw >= 9){
-    const dispTick = Math.max(lvlTick, niceStep((hi-lo)/26));
-    const rows = new Map();       // bar index -> Map(level -> {b,s})
-    let cellMax = 0;
-    for (let i=start;i<end;i++){
-      const e = flow.get(bars[i].time);
-      if (!e) continue;
-      const g = new Map();
-      for (const [L, c] of e.lv){
-        const k = Math.floor(L/dispTick)*dispTick;
-        let a = g.get(k);
-        if (!a){ a = {b:0, s:0}; g.set(k, a); }
-        a.b += c.b; a.s += c.s;
-        const t = a.b + a.s;
-        if (t > cellMax) cellMax = t;
-      }
-      rows.set(i, g);
-    }
-    if (cellMax > 0){
-      const cellH = Math.max(2, Math.abs(y(0) - y(dispTick)) - 1);
-      const half = body/2;
-      const showNums = bw >= 54 && cellH >= 9;
-      ctx.font = Math.min(10, Math.max(7, cellH-2)) + 'px Vazirmatn, sans-serif';
-      ctx.textBaseline = 'middle';
-      for (const [i, g] of rows){
-        const cx = x(i);
-        for (const [L, c] of g){
-          const t = c.b + c.s;
-          if (!t) continue;
-          const yTop = y(L + dispTick);
-          if (yTop < -cellH || yTop > priceH + PAD_T) continue;
-          const share = Math.min(1, t/cellMax);
-          const ws = half * (c.s/t) * share, wb = half * (c.b/t) * share;
-          if (ws > 0.4){
-            ctx.fillStyle = 'rgba(229,72,77,' + (0.35 + 0.5*share).toFixed(2) + ')';
-            ctx.fillRect(cx - ws, yTop, ws, cellH);
-          }
-          if (wb > 0.4){
-            ctx.fillStyle = 'rgba(11,176,123,' + (0.35 + 0.5*share).toFixed(2) + ')';
-            ctx.fillRect(cx, yTop, wb, cellH);
-          }
-          if (showNums){
-            ctx.fillStyle = 'rgba(230,237,243,.85)';
-            ctx.textAlign = 'right';
-            ctx.fillText(shortVol(c.s), cx - 2, yTop + cellH/2);
-            ctx.textAlign = 'left';
-            ctx.fillText(shortVol(c.b), cx + 2, yTop + cellH/2);
-          }
-        }
-      }
-      ctx.textAlign = 'center';
-    }
   }
 
   // last price marker
@@ -389,7 +396,7 @@ function barAt(px){
   return Math.max(start, Math.min(end-1, i));
 }
 function clampView(){
-  view.count = Math.max(20, Math.min(600, Math.round(view.count)));
+  view.count = Math.max(6, Math.min(600, Math.round(view.count)));
   view.right = Math.max(0, Math.min(Math.max(0, bars.length-10), Math.round(view.right)));
   follow = view.right === 0;
 }
@@ -563,12 +570,27 @@ function connectTrades(){
 }
 // One batch of recent trades so the newest bars have flow immediately; older
 // bars fill in as the stream runs. Binance only serves the last 1000 this way.
-async function seedTrades(){
+async function seedTrades(pages){
+  const host = HOSTS[hostIdx];
   try{
-    const res = await fetch(HOSTS[hostIdx]+'/api/v3/aggTrades?symbol='+symbol+'&limit=1000',
-                            {cache:'no-store'});
+    const res = await fetch(host+'/api/v3/aggTrades?symbol='+symbol+'&limit=1000', {cache:'no-store'});
     if (!res.ok) return;
-    for (const t of await res.json()) addTrade(+t.p, +t.q, t.T, t.m === true);
+    let batch = await res.json();
+    for (const t of batch) addTrade(+t.p, +t.q, t.T, t.m === true);
+    // Walk backwards by aggregate-trade id; each page is another thousand
+    // trades of history for the footprint.
+    for (let p=1; p<pages && batch.length; p++){
+      const firstId = batch[0].a;
+      const from = firstId - 1000;
+      if (from < 0) break;
+      const r2 = await fetch(host+'/api/v3/aggTrades?symbol='+symbol+'&fromId='+from+'&limit=1000',
+                             {cache:'no-store'});
+      if (!r2.ok) break;
+      batch = await r2.json();
+      if (!batch.length) break;
+      for (const t of batch) addTrade(+t.p, +t.q, t.T, t.m === true);
+      if (p % 2 === 0) render();
+    }
   } catch(e){ /* flow is an enhancement; the chart stands without it */ }
 }
 
@@ -582,8 +604,8 @@ async function reload(){
     resize();
     showStats(bars.length-1);
     connect();
-    await seedTrades();
     connectTrades();
+    await seedTrades(tf.base === '1s' ? 6 : 10);
     render();
   }
 }
