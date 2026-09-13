@@ -73,6 +73,8 @@
     <option value="XRPUSDT">ریپل — XRPUSDT</option>
   </select>
   <button id="hotBtn" class="on">هایلایت حجم</button>
+  <button id="dBtn" class="on">دلتا</button>
+  <button id="fpBtn" class="on">فوت‌پرینت</button>
   <button id="homeBtn">آخرین</button>
   <div class="tfs" id="tfs"></div>
 </header>
@@ -82,6 +84,7 @@
   <div class="stat"><span class="k">تغییر</span><b id="chg">—</b></div>
   <div class="stat"><span class="k">RVOL</span><b id="rvol">—</b></div>
   <div class="stat"><span class="k">حجم</span><b id="cvol">—</b></div>
+  <div class="stat"><span class="k">دلتا</span><b id="dlt">—</b></div>
 </div>
 
 <div id="wrap">
@@ -122,6 +125,28 @@ let tf = TFS[0], symbol = 'BTCUSDT', highlight = true;
 let bars = [], ws = null, hostIdx = 0, wsIdx = 0, reconnect = null;
 let view = {count:120, right:0};      // right = bars hidden past the right edge
 let cross = null, follow = true;
+let deltaOn = true, fpOn = true;
+
+// Real order flow. Binance flags every trade with which side was the aggressor,
+// so buying and selling are counted rather than guessed from candle colour the
+// way every other tool here has had to. Keyed by the bar's bucket time.
+let flow = new Map();      // time -> {buy, sell, lv:Map(priceLevel -> {b,s})}
+let tws = null, twsTimer = null, lvlTick = 1;
+
+function barSeconds(){
+  if (tf.base === '1s')  return tf.fold;   // 1, 5, 15 or 30
+  if (tf.base === '1m')  return 60;
+  if (tf.base === '5m')  return 300;
+  if (tf.base === '15m') return 900;
+  return tf.fold;
+}
+const tradeBucket = sec => Math.floor(sec/barSeconds()) * barSeconds();
+
+function niceStep(x){
+  if (!(x > 0)) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(x))), n = x/mag;
+  return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * mag;
+}
 
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -222,13 +247,46 @@ function render(){
     ctx.fillRect(cx-body/2, top, body, h);
   }
 
-  // volume
+  // volume, tinted by real delta where the flow is known
   for (let i=start;i<end;i++){
-    const b = bars[i], cx = x(i);
-    ctx.fillStyle = isHot(i) ? '#ff9f0a'
-      : (b.close >= b.open ? 'rgba(11,176,123,.45)' : 'rgba(229,72,77,.45)');
+    const b = bars[i], cx = x(i), e = flow.get(b.time);
+    let col;
+    if (isHot(i)) col = '#ff9f0a';
+    else if (deltaOn && e && (e.buy || e.sell))
+      col = e.buy >= e.sell ? 'rgba(11,176,123,.6)' : 'rgba(229,72,77,.6)';
+    else col = b.close >= b.open ? 'rgba(11,176,123,.35)' : 'rgba(229,72,77,.35)';
+    ctx.fillStyle = col;
     const vt = vy(b.volume);
     ctx.fillRect(cx-body/2, vt, body, plotH-vt);
+  }
+
+  // Footprint: what traded at each price inside the candle, and which side was
+  // the aggressor. Only drawn once the bars are wide enough to read — below
+  // that it is a smear, and a smear is worse than nothing.
+  if (fpOn && bw >= 15){
+    let cellMax = 0;
+    for (let i=start;i<end;i++){
+      const e = flow.get(bars[i].time);
+      if (!e) continue;
+      for (const c of e.lv.values()){ const t = c.b + c.s; if (t > cellMax) cellMax = t; }
+    }
+    if (cellMax > 0){
+      const cellH = Math.max(2, Math.abs(y(0) - y(lvlTick)));
+      for (let i=start;i<end;i++){
+        const e = flow.get(bars[i].time);
+        if (!e) continue;
+        const cx = x(i);
+        for (const [L, c] of e.lv){
+          const t = c.b + c.s;
+          if (!t) continue;
+          const yTop = y(L + lvlTick);
+          if (yTop < -cellH || yTop > priceH + PAD_T) continue;
+          const a = 0.12 + 0.68 * Math.min(1, t/cellMax);
+          ctx.fillStyle = (c.b >= c.s ? 'rgba(11,176,123,' : 'rgba(229,72,77,') + a.toFixed(2) + ')';
+          ctx.fillRect(cx - body/2, yTop, body, cellH);
+        }
+      }
+    }
   }
 
   // last price marker
@@ -275,6 +333,15 @@ function showStats(i){
   $('rvol').textContent = rv ? rv.toFixed(2)+'x' : '—';
   $('rvol').className = rv && rv>=HOT_MULT ? 'hot' : '';
   $('cvol').textContent = shortVol(b.volume);
+  const e = flow.get(b.time);
+  if (e && (e.buy || e.sell)){
+    const d = e.buy - e.sell;
+    $('dlt').textContent = (d >= 0 ? '+' : '') + shortVol(Math.abs(d)).replace('-','');
+    $('dlt').className = d >= 0 ? 'up' : 'down';
+  } else {
+    $('dlt').textContent = '—';
+    $('dlt').className = '';
+  }
 }
 function statsForCursor(){ showStats(cross != null ? cross : bars.length-1); }
 
@@ -430,14 +497,58 @@ function connect(){
 }
 function retry(){ wsIdx++; clearTimeout(reconnect); reconnect = setTimeout(connect, 2500); }
 
+// m === true means the buyer sat on the book, so the trade was an aggressive
+// SELL. That flag is the whole reason this is measurement and not inference.
+function addTrade(price, qty, ms, isSell){
+  const b = tradeBucket(Math.floor(ms/1000));
+  let e = flow.get(b);
+  if (!e){
+    e = {buy:0, sell:0, lv:new Map()};
+    flow.set(b, e);
+    while (flow.size > 400) flow.delete(flow.keys().next().value);
+  }
+  if (isSell) e.sell += qty; else e.buy += qty;
+  const L = Math.floor(price/lvlTick)*lvlTick;
+  let c = e.lv.get(L);
+  if (!c){ c = {b:0, s:0}; e.lv.set(L, c); }
+  if (isSell) c.s += qty; else c.b += qty;
+}
+function connectTrades(){
+  if (tws){ try{ tws.onclose = null; tws.close(); }catch(e){} tws = null; }
+  clearTimeout(twsTimer);
+  try{ tws = new WebSocket(WS_HOSTS[wsIdx%WS_HOSTS.length]+'/'+symbol.toLowerCase()+'@aggTrade'); }
+  catch(e){ twsTimer = setTimeout(connectTrades, 3000); return; }
+  tws.onclose = () => { twsTimer = setTimeout(connectTrades, 3000); };
+  tws.onmessage = ev => {
+    let t; try{ t = JSON.parse(ev.data); }catch(e){ return; }
+    if (!t || t.p == null) return;
+    addTrade(+t.p, +t.q, t.T, t.m === true);
+  };
+}
+// One batch of recent trades so the newest bars have flow immediately; older
+// bars fill in as the stream runs. Binance only serves the last 1000 this way.
+async function seedTrades(){
+  try{
+    const res = await fetch(HOSTS[hostIdx]+'/api/v3/aggTrades?symbol='+symbol+'&limit=1000',
+                            {cache:'no-store'});
+    if (!res.ok) return;
+    for (const t of await res.json()) addTrade(+t.p, +t.q, t.T, t.m === true);
+  } catch(e){ /* flow is an enhancement; the chart stands without it */ }
+}
+
 async function reload(){
   state('بارگذاری…');
   if (await loadHistory()){
     view.right = 0; follow = true; cross = null;
     view.count = Math.min(160, Math.max(30, bars.length));
+    flow = new Map();
+    lvlTick = niceStep((bars[bars.length-1]?.close || 1) * 0.00004);
     resize();
     showStats(bars.length-1);
     connect();
+    await seedTrades();
+    connectTrades();
+    render();
   }
 }
 
@@ -458,12 +569,19 @@ TFS.forEach(t => {
 $('sym').onchange = e => { symbol = e.target.value; reload(); };
 $('hotBtn').onclick = () => { highlight = !highlight;
   $('hotBtn').className = highlight ? 'on' : ''; render(); };
+$('dBtn').onclick = () => { deltaOn = !deltaOn; $('dBtn').className = deltaOn ? 'on' : ''; render(); };
+$('fpBtn').onclick = () => { fpOn = !fpOn; $('fpBtn').className = fpOn ? 'on' : ''; render(); };
 $('homeBtn').onclick = () => { view.right = 0; follow = true; cross = null;
   statsForCursor(); render(); };
 
 // A 1s socket on a phone in a pocket is wasted battery and data.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden){ if (ws){ try{ ws.onclose=null; ws.close(); }catch(e){} ws=null; } state('متوقف'); }
+  if (document.hidden){
+    if (ws){ try{ ws.onclose=null; ws.close(); }catch(e){} ws=null; }
+    if (tws){ try{ tws.onclose=null; tws.close(); }catch(e){} tws=null; }
+    clearTimeout(twsTimer);
+    state('متوقف');
+  }
   else reload();
 });
 
