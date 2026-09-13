@@ -20,23 +20,41 @@ Three things together, never one on its own:
 
 1. **A base** — one to five candles whose range is under 60% of the recent
    normal while their volume is at least double it. Money moved, price did not.
-2. **An exit** — the next candle leaves the base with twice the normal range
-   and half again the normal volume, closing a full base height clear of it.
+2. **An exit** — the next candle leaves the base with half again the normal
+   range and half again the normal volume, closing a full base height clear of
+   it.
 3. **A run** — price then travelled at least three base heights away. A zone
    that never moved price has nothing behind it.
 4. **Silence since** — price has not traded back through. A zone that has
    already been revisited is spent and is dropped, not alerted.
-5. **Agreement** — another timeframe holds a zone in the same direction at the
-   same prices. A level only one timeframe can see is a level only one
-   timeframe will respect.
-6. **Flow against the exit** — the aggressor split inside the base points the
+5. **Flow against the exit** — the aggressor split inside the base points the
    OPPOSITE way from where price left. Sellers were being filled and price rose
    anyway. This is the difference between a level someone defended and a level
    price merely passed through.
 
+A zone another timeframe also holds, in the same direction at the same prices,
+**scores higher** — it is not required. Requiring it was measured against the
+live market and turned out to be a gate nothing could pass: the whole liquid
+market holds only a handful of live zones at any moment, and demanding two
+timeframes hold the same band simultaneously meant no alert would ever fire.
+
 Alerts are raised on **15m, 1h and 4h** only. 5m is read for agreement and
 never raises an alert of its own: on crypto a 5m zone is noise more often than
 it is a level.
+
+## Reading a quiet run
+
+Every run prints its funnel, so silence can be read instead of guessed at:
+
+```
+gates: base=45990  volume=393  exit=38  clear=32  fresh=6  impulse=6
+exit gate at other thresholds: 1.2x=55  1.5x=38  1.8x=30  2.0x=25  2.5x=17
+```
+
+`volume` is the heart of it — of forty-six thousand quiet stretches, under four
+hundred carried heavy volume while going nowhere. That ratio is the idea the
+whole bot rests on. The second line says how many candidates sit just outside
+the exit threshold, so it can be set from measurement rather than by feel.
 
 Candidates from every symbol are collected, **ranked**, and only the best few
 are sent — at most 3 a run and 12 a day. When Bitcoin moves, a hundred pairs
