@@ -1,0 +1,36 @@
+name: volume watch
+
+# Every five minutes is the shortest schedule GitHub allows, and it can run
+# several minutes late under load. That suits 5m and 15m candles; it is not a
+# substitute for a live feed.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      test:
+        description: 'فقط یک پیام آزمایشی بفرست'
+        type: boolean
+        default: false
+
+concurrency:
+  group: volume-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: watch
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SYMBOLS: ${{ vars.SYMBOLS }}
+          INTERVAL: ${{ vars.INTERVAL }}
+          TEST: ${{ inputs.test && '1' || '0' }}
+        run: python bot/watch.py
