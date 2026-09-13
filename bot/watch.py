@@ -104,10 +104,13 @@ EXIT_CLEAR = 1.00                # how far past the base the exit must close,
 MIN_PUSH = float(env("MIN_PUSH", "1.50"))
 PUSH_TRIALS = (1.0, 1.5, 2.0, 3.0)
 
-# A zone is reported once, on the run after the candle that made it. Two
-# candles of slack cover a late or skipped run without reporting the whole
-# standing inventory every time.
-NEW_BARS = int(env("NEW_BARS", "2"))
+# How far price may be from the band and the level still be worth a pending
+# order. Age is not what makes a zone stale -- an untouched zone is an untouched
+# zone -- but a limit order a fifth of the way across the chart will never fill.
+# Each zone is sent once and never repeated, so the standing inventory arrives
+# the first time and new ones as they appear.
+MAX_AWAY = float(env("MAX_AWAY", "0.10"))
+AWAY_TRIALS = (0.02, 0.05, 0.10, 0.20)
 LOOKBACK = 20                    # candles forming "normal"
 SCAN = 500                       # A zone is only findable while it is still
                                  # inside the window, so the window is the
@@ -556,11 +559,16 @@ def scan(symbol):
             continue
         stats["zones"] += len(zs)
         for z in zs:
-            # Only zones born in the last candle or two. The message is meant
-            # to arrive while the zone is new and price is still far from it,
-            # so a limit order can be left there; reporting the standing
-            # inventory would send the same levels every five minutes.
-            if z["exit"] < len(ks) - 2 - NEW_BARS:
+            # Near enough that a pending order there means something. The
+            # message is sent with price still away from the band -- that is
+            # the whole point of reporting at birth -- but not so far away that
+            # it will never be reached.
+            edge = z["top"] if z["side"] == "demand" else z["bot"]
+            away = abs(price - edge) / price
+            for t in AWAY_TRIALS:
+                if away <= t:
+                    funnel["away@%.2f" % t] = funnel.get("away@%.2f" % t, 0) + 1
+            if away > MAX_AWAY:
                 continue
             stats["arrived"] += 1
             z["span"] = (z["exit"] - z["start"] + 1) * (ks[1]["t"] - ks[0]["t"])
@@ -768,10 +776,10 @@ def main():
             for k, v in stats["funnel"].items():
                 funnel[k] = funnel.get(k, 0) + v
 
-    print("scanned %d symbols: %d live zone(s), %d at price, %d with agreement, "
-          "%d above the score floor" % (len(symbols), totals["zones"],
-                                        totals["arrived"], totals["agreed"],
-                                        totals["scored"]))
+    print("scanned %d symbols: %d live zone(s), %d within reach, %d with "
+          "agreement, %d above the score floor"
+          % (len(symbols), totals["zones"], totals["arrived"],
+             totals["agreed"], totals["scored"]))
     print("gates: " + "  ".join("%s=%d" % (k, funnel.get(k, 0)) for k in FUNNEL))
     print("exit gate at other thresholds: "
           + "  ".join("%.1fx=%d" % (t, funnel.get("exit@%.1f" % t, 0))
@@ -779,6 +787,9 @@ def main():
     print("exit push at other thresholds: "
           + "  ".join("%.1fx=%d" % (t, funnel.get("push@%.1f" % t, 0))
                       for t in PUSH_TRIALS))
+    print("distance from price: "
+          + "  ".join("within %.0f%%=%d" % (t * 100, funnel.get("away@%.2f" % t, 0))
+                      for t in AWAY_TRIALS))
 
     # When Bitcoin moves, a hundred pairs move with it. Ranking first and
     # sending only the best keeps a correlated hour from emptying itself into
