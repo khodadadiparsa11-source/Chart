@@ -21,7 +21,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -48,8 +48,11 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SYMBOLS: ${{ vars.SYMBOLS }}
+          TOP_N: ${{ vars.TOP_N }}
           MIN_SCORE: ${{ vars.MIN_SCORE }}
           COOLDOWN_MIN: ${{ vars.COOLDOWN_MIN }}
+          DAILY_CAP: ${{ vars.DAILY_CAP }}
+          MAX_PER_RUN: ${{ vars.MAX_PER_RUN }}
           TEST: ${{ inputs.test && '1' || '0' }}
         run: python bot/watch.py
 

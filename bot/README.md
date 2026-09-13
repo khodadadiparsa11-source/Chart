@@ -1,9 +1,14 @@
 # Telegram zone watch
 
-Every five minutes it scans five symbols on **5m, 15m, 1h and 4h**, and sends a
-message only when price has **come back** to a zone worth an order — with a
-picture of the chart, a box around the zone, a score out of ten, and the symbol
-name.
+Every five minutes it scans the **hundred busiest USDT pairs on Binance** on
+**5m, 15m, 1h and 4h**, and sends a message only when price has **come back** to
+a zone worth an order — with a picture of the chart, a box around the zone, a
+score out of ten, and the symbol name.
+
+The list is ranked by real 24h turnover, not chosen at random: on a thin pair
+one participant can draw a heavy base in a tight range with nothing behind it —
+the same footprint, none of the meaning. Leveraged tokens and stablecoin pairs
+are excluded.
 
 It is built to stay quiet. Every gate below is required, not scored: a
 candidate failing any one of them is dropped, never softened into a weaker
@@ -33,6 +38,23 @@ Alerts are raised on **15m, 1h and 4h** only. 5m is read for agreement and
 never raises an alert of its own: on crypto a 5m zone is noise more often than
 it is a level.
 
+Candidates from every symbol are collected, **ranked**, and only the best few
+are sent — at most 3 a run and 12 a day. When Bitcoin moves, a hundred pairs
+move with it, and an unranked run would empty the whole correlated batch into
+the chat at once.
+
+## Outcomes
+
+Every alert is followed afterwards using candles the next runs already fetch.
+From the moment price arrived: leaving the band by one zone height counts as a
+**reaction**, trading one zone height through it counts as a **failure**, and
+neither within 24 candles counts as **no reaction**. One tally a day reports
+the count.
+
+It is a measurement of whether price reacted, not a win rate — no stop, no
+target, no spread. More alerts prove nothing on their own; what happened after
+them is the only thing that can.
+
 The alert is sent when price **returns** to the band, because that is the moment
 an order would be placed, not when the zone was formed.
 
@@ -60,7 +82,10 @@ has been backtested.
 
    Secrets, not variables: a token in a variable is a token in plain sight.
 4. **Optional settings** under the *Variables* tab of the same page:
-   - `SYMBOLS` — default `BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,PAXGUSDT`
+   - `SYMBOLS` — leave unset to watch the busiest pairs automatically; set a
+     comma-separated list to watch exactly those instead.
+   - `TOP_N` — default `100`, how many of the busiest pairs to watch.
+   - `DAILY_CAP` — default `12`, the most alerts that can be sent in a day.
    - `MIN_SCORE` — default `8`. Raise it to `9` for stricter still. Lowering it
      does not find more of the same setup; it starts admitting a looser one.
    - `COOLDOWN_MIN` — default `180`; at most one alert per symbol in that window.

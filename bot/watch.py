@@ -1,33 +1,49 @@
-"""Watch a few symbols for zones worth an order, and send the chart to Telegram.
+"""Watch the most liquid Binance pairs for zones worth an order, and send the
+chart to Telegram.
 
 WHAT COUNTS AS A ZONE HERE
 
 Not "heavy volume". Heavy volume happens every hour and alerting on it is how a
-bot becomes noise. What this looks for is the three-part shape:
+bot becomes noise. Six conditions, every one of them required -- a candidate
+failing any is dropped, never reported with a smaller number:
 
-  1. a BASE   — one to five candles whose range is small against the recent
-                normal, yet whose volume is well ABOVE it. Money moved, price
-                did not. That gap is the only observable trace of size being
-                filled; nothing in any feed names who filled it.
-  2. an EXIT  — the very next candle leaves the base with a wide range and
-                volume of its own, closing clear of it. Held still, then let go.
-  3. SILENCE  — price has not come back since. A zone price already traded
-                back through is spent; it is dropped, not alerted.
+  1. a BASE      one to five candles whose range is under 60% of the recent
+                 normal while their volume is at least double it. Money moved,
+                 price did not. That gap is the only observable trace of size
+                 being filled; nothing in any feed names who filled it.
+  2. an EXIT     the very next candle leaves the base on double the normal
+                 range and half again the normal volume, closing a full base
+                 height clear of it. Held still, then let go.
+  3. a RUN       price then travelled at least three base heights away. A zone
+                 that never moved price has nothing behind it.
+  4. SILENCE     no trade back into the band since. A zone price has already
+                 traded back through is spent, and is dropped.
+  5. AGREEMENT   another timeframe holds a zone in the same direction at the
+                 same prices. A level only one timeframe can see is a level
+                 only one timeframe will respect.
+  6. FLOW        the aggressor split inside the base points the OPPOSITE way
+                 from the exit. Sellers were being filled and price rose
+                 anyway: the difference between a level someone defended and a
+                 level price merely passed through.
 
 THE ALERT IS NOT WHEN THE ZONE FORMS. It is when price RETURNS to it, because
-that is the moment an order would be placed. A zone that formed three hours ago
-and is being touched now is the message; the same zone sitting untouched is not.
+that is the moment an order would be placed.
 
-ALL TIMEFRAMES: every symbol is scanned on 5m, 15m, 1h and 4h. A zone that
-lines up with a zone in the same direction on another timeframe scores higher.
-1m is deliberately left out — GitHub's schedule is five minutes at best, so a
-1m zone would be reported after it had already been traded.
+WHY SO MANY SYMBOLS: the gates are strict enough that five symbols can go days
+without a single alert, and from the outside "the market was quiet" and "the
+code never matches anything" look identical. Scanning the whole liquid end of
+the market separates them. The list is ranked by real 24h turnover rather than
+taken at random: on a thin pair one participant can draw this exact footprint
+with no size behind it at all.
 
-THE NUMBER on the image is a 0-10 conviction score built from: how heavy the
-base volume was, how tight it was, how hard the exit left, which timeframe it
-sits on, how many other timeframes agree, and whether the aggressor flow inside
-the base pointed the OPPOSITE way from the exit — selling absorbed before a rise
-is the cleanest version of this shape there is.
+Candidates from every symbol are collected, ranked, and only the best few are
+sent -- when Bitcoin moves, a hundred pairs move with it, and an unranked run
+would empty the whole correlated batch into the chat at once.
+
+OUTCOMES: every alert is followed afterwards. Price either reacted away from
+the band or traded straight through it, and a daily tally reports which. More
+alerts on their own prove nothing; what happened after them is the only thing
+that can.
 
 A score is a ranking, not a probability. Nothing here has been backtested.
 """
@@ -48,9 +64,10 @@ def env(name, default):
     return v.strip() if v and v.strip() else default
 
 
-SYMBOLS = [s.strip().upper() for s in
-           env("SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,PAXGUSDT").split(",")
-           if s.strip()]
+# Empty means "rank the market by turnover and take the top TOP_N"; a list here
+# overrides that and watches exactly those.
+SYMBOLS = [s.strip().upper() for s in env("SYMBOLS", "").split(",") if s.strip()]
+TOP_N = int(env("TOP_N", "100"))
 
 # Scanned on four timeframes; alerted on three. A 5m zone on crypto is noise
 # more often than it is a level, so 5m is read only as agreement for a bigger
@@ -60,9 +77,10 @@ ALERT_TFS = ["15m", "1h", "4h"]
 TF_WEIGHT = {"5m": 0, "15m": 1, "1h": 2, "4h": 3}
 FINER = {"5m": "1m", "15m": "1m", "1h": "5m", "4h": "15m"}
 
-MIN_SCORE = float(env("MIN_SCORE", "8"))       # out of 10
+MIN_SCORE = float(env("MIN_SCORE", "8"))        # out of 10
 COOLDOWN_MIN = int(env("COOLDOWN_MIN", "180"))  # per symbol
-MAX_PER_RUN = int(env("MAX_PER_RUN", "2"))
+MAX_PER_RUN = int(env("MAX_PER_RUN", "3"))
+DAILY_CAP = int(env("DAILY_CAP", "12"))
 
 MIN_BASE, MAX_BASE = 1, 5        # his own count: one to five candles
 BASE_TIGHT = 0.60                # base candle range vs the recent normal range
@@ -75,13 +93,25 @@ MIN_IMPULSE = 3.00               # how far price ran from the zone afterwards,
                                  # in base heights, before coming back
 NEAR = float(env("NEAR", "0.0005"))   # 0.05% counts as "arrived"
 LOOKBACK = 20                    # candles forming "normal"
-SCAN = 200                       # candles searched per timeframe
+SCAN = 100                       # candles per request: 100 is the largest size
+                                 # Binance still charges a single unit of
+                                 # weight for, and 400 of those a run is well
+                                 # inside the limit.
+
+# Judging an alert afterwards: from the moment price arrived, did it leave the
+# band by a full zone height before trading a full zone height through it?
+OUT_WAIT = 24                    # candles allowed before it counts as no reaction
 
 STATE_FILE = env("STATE_FILE", "state/seen.json")
 CHART_URL = "https://khodadadiparsa11-source.github.io/Chart/"
 
 HOSTS = ["https://data-api.binance.vision", "https://api.binance.com",
          "https://api1.binance.com", "https://api2.binance.com"]
+
+# Leveraged tokens track a multiple of a price rather than a market, and a
+# stablecoin pair has no move to react with. Neither can hold a zone.
+SKIP_SUFFIX = ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")
+SKIP_BASE = ("USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "EUR", "GBP", "AEUR")
 
 # ---------------------------------------------------------------- plumbing
 
@@ -106,15 +136,37 @@ def klines(symbol, tf, limit=SCAN, start=None, end=None):
         q += "&startTime=%d" % start
     if end is not None:
         q += "&endTime=%d" % end
-    rows = get_json(q)
     out = []
-    for k in rows:
+    for k in get_json(q):
         out.append({
             "t": int(k[0]), "o": float(k[1]), "h": float(k[2]),
             "l": float(k[3]), "c": float(k[4]), "v": float(k[5]),
             "ct": int(k[6]),
         })
     return out
+
+
+def liquid_symbols(n):
+    """The n busiest USDT pairs by real 24h turnover.
+
+    Taking a hundred pairs at random would drag in the thin end of the market,
+    where one participant can draw a heavy base in a tight range with no size
+    behind it -- the same footprint, none of the meaning.
+    """
+    rows = get_json("/api/v3/ticker/24hr")
+    picked = []
+    for r in rows:
+        s = r.get("symbol", "")
+        if not s.endswith("USDT") or s.endswith(SKIP_SUFFIX):
+            continue
+        if s[:-4] in SKIP_BASE:
+            continue
+        try:
+            picked.append((float(r.get("quoteVolume", 0)), s))
+        except (TypeError, ValueError):
+            continue
+    picked.sort(reverse=True)
+    return [s for _, s in picked[:n]]
 
 
 def tg(method, data):
@@ -170,14 +222,21 @@ def send_photo(png, caption):
 def load_state():
     try:
         with open(STATE_FILE) as f:
-            return json.load(f)
+            st = json.load(f)
     except Exception:               # noqa: BLE001 - a missing or corrupt state starts fresh
-        return {"zones": {}, "symbol_last": {}}
+        st = {}
+    st.setdefault("zones", {})        # alerted zone -> when, so it is not repeated
+    st.setdefault("symbol_last", {})  # symbol -> when it last alerted
+    st.setdefault("open", {})         # alerts still waiting for their outcome
+    st.setdefault("day", {})          # the running tally for today
+    return st
 
 
 def save_state(st):
     cutoff = time.time() - 7 * 86400
     st["zones"] = {k: v for k, v in st["zones"].items() if v > cutoff}
+    st["open"] = {k: v for k, v in st["open"].items()
+                  if v.get("at", 0) / 1000 > cutoff}
     d = os.path.dirname(STATE_FILE)
     if d:
         os.makedirs(d, exist_ok=True)
@@ -193,7 +252,7 @@ def mean(xs):
 
 
 def find_zones(ks, tf):
-    """Base -> exit -> untouched since. Returns the zones still live."""
+    """Base -> exit -> run -> untouched since. Returns the zones still live."""
     n = len(ks)
     zones = []
     rng = [k["h"] - k["l"] for k in ks]
@@ -300,13 +359,12 @@ def base_delta(symbol, z):
     is close enough to tell which way the flow leaned. It is called approximate
     everywhere it is shown.
     """
-    fine = FINER[z["tf"]]
     try:
-        rows = klines(symbol, fine, limit=1000,
+        rows = klines(symbol, FINER[z["tf"]], limit=1000,
                       start=z["formed"], end=z["formed"] + z["span"])
-    except Exception as e:          # noqa: BLE001 - the score simply misses this bonus
+    except Exception as e:          # noqa: BLE001 - a missing delta drops the candidate
         print("delta failed for %s: %s" % (symbol, e))
-        return 0.0
+        return None
     buy = sell = 0.0
     for k in rows:
         if k["v"] <= 0:
@@ -416,12 +474,12 @@ def fmt(p):
     if p >= 1000:
         return "%.1f" % p
     if p >= 1:
-        return "%.3f" % p
+        return "%.4f" % p
     return "%.6f" % p
 
 
-def examine(symbol, state, now_ms):
-    """Returns (zone, score, agreeing timeframes, candles) or None."""
+def scan(symbol):
+    """Every live zone this symbol is currently sitting on. No state touched."""
     found = {}
     price = None
     for tf in TFS:
@@ -432,9 +490,9 @@ def examine(symbol, state, now_ms):
             price = ks[-1]["c"]
         found[tf] = (ks, find_zones(ks, tf))
     if price is None:
-        return None
+        return [], {}
 
-    best = None
+    out = []
     for tf, (ks, zs) in found.items():
         if tf not in ALERT_TFS:
             continue
@@ -449,38 +507,87 @@ def examine(symbol, state, now_ms):
             if not agree:
                 continue
             pts = score(z, len(agree), None)
-            if pts + 2 < MIN_SCORE:          # even a perfect delta cannot save it
+            if pts + 2 < MIN_SCORE:      # even a perfect delta cannot save it
                 continue
-            if best is None or pts > best[1]:
-                best = (z, pts, agree, ks)
+            out.append({"symbol": symbol, "z": z, "agree": agree,
+                        "pts": pts, "ks": ks, "price": price})
+    return out, {tf: ks for tf, (ks, _) in found.items()}
 
-    if best is None:
-        return None
 
-    z, pts, agree, ks = best
-    d = base_delta(symbol, z)
-    # Also required: the flow inside the base must have pointed the OPPOSITE way
-    # from the exit. Sellers were being filled and price still rose -- that is
-    # the difference between a level someone defended and a level price passed.
-    if (z["side"] == "demand" and d > -0.10) or (z["side"] == "supply" and d < 0.10):
-        print("%s %s zone: flow agreed with the exit, skipped" % (symbol, z["tf"]))
-        return None
-    pts = score(z, len(agree), d)
-    if pts < MIN_SCORE:
-        return None
-    z["delta"] = d
+# ---------------------------------------------------------------- outcomes
 
-    key = "%s|%s|%s|%d" % (symbol, z["tf"], z["side"], z["formed"])
-    if key in state["zones"]:
-        return None
-    last = state["symbol_last"].get(symbol, 0)
-    if now_ms / 1000 - last < COOLDOWN_MIN * 60:
-        print("%s in cooldown" % symbol)
-        return None
 
-    state["zones"][key] = time.time()
-    state["symbol_last"][symbol] = now_ms / 1000
-    return (z, pts, agree, ks, price)
+def settle(state, symbol, by_tf):
+    """Did the alerts already sent react off their band, or trade through it?
+
+    Every watched symbol's candles are already in hand, so judging an old alert
+    costs nothing. The test is deliberately crude and is described as what it
+    is: one zone height away counts as a reaction, one zone height through
+    counts as a failure, and neither within a day of candles counts as no
+    reaction at all.
+    """
+    for key, r in list(state["open"].items()):
+        if r["symbol"] != symbol:
+            continue
+        ks = by_tf.get(r["tf"])
+        if not ks:
+            continue
+        after = [k for k in ks if k["t"] > r["at"]]
+        if not after:
+            continue
+        h = r["top"] - r["bot"]
+        verdict = None
+        for i, k in enumerate(after):
+            if r["side"] == "demand":
+                if k["h"] >= r["top"] + h:
+                    verdict = "reacted"
+                elif k["l"] <= r["bot"] - h:
+                    verdict = "failed"
+            else:
+                if k["l"] <= r["bot"] - h:
+                    verdict = "reacted"
+                elif k["h"] >= r["top"] + h:
+                    verdict = "failed"
+            if verdict:
+                break
+            if i + 1 >= OUT_WAIT:
+                verdict = "flat"
+                break
+        if verdict:
+            day = state["day"]
+            day[verdict] = day.get(verdict, 0) + 1
+            print("outcome %s %s %s -> %s" % (symbol, r["tf"], r["side"], verdict))
+            del state["open"][key]
+
+
+def daily_report(state, now):
+    """One tally a day, and only if there was something to tally."""
+    today = time.strftime("%Y-%m-%d", time.gmtime(now))
+    day = state["day"]
+    if day.get("date") == today:
+        return
+    if day.get("date"):
+        sent = day.get("sent", 0)
+        react, fail, flat = day.get("reacted", 0), day.get("failed", 0), day.get("flat", 0)
+        done = react + fail + flat
+        if sent or done:
+            send_text(
+                "📋 <b>کارنامه‌ی {d}</b>\n\n"
+                "نوتیف ارسالی: <b>{sent}</b>\n"
+                "بسته‌شده: <b>{done}</b>\n"
+                "  واکنش داد: <b>{react}</b>\n"
+                "  رد شد: <b>{fail}</b>\n"
+                "  بی‌واکنش: <b>{flat}</b>\n"
+                "هنوز باز: <b>{open}</b>\n\n"
+                "<i>«واکنش» یعنی قیمت به اندازه‌ی یک ارتفاعِ محدوده ازش دور شد "
+                "قبل از اینکه به همون اندازه ازش رد بشه. این یک اندازه‌گیریه، "
+                "نه وین‌ریت — استاپ و تارگت واقعی حساب نشده.</i>"
+                .format(d=day.get("date"), sent=sent, done=done, react=react,
+                        fail=fail, flat=flat, open=len(state["open"])))
+    state["day"] = {"date": today}
+
+
+# ---------------------------------------------------------------- messages
 
 
 def caption(symbol, z, pts, agree, price):
@@ -509,35 +616,87 @@ def caption(symbol, z, pts, agree, price):
              url=CHART_URL)
 
 
+# ---------------------------------------------------------------- the run
+
+
 def main():
+    symbols = SYMBOLS
+    if not symbols:
+        try:
+            symbols = liquid_symbols(TOP_N)
+        except Exception as e:      # noqa: BLE001 - fall back rather than run on nothing
+            print("ranking failed, using the majors: %s" % e)
+            symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "PAXGUSDT"]
+
     if os.environ.get("TEST") == "1":
-        send_text("✅ ربات وصل است.\nنمادها: %s\nهشدار روی: %s (۵م فقط برای تایید)\n"
-                  "حداقل امتیاز: %g/10\nروزها ممکنه ساکت باشه — همینه که قرار بود باشه."
-                  % (", ".join(SYMBOLS), ", ".join(ALERT_TFS), MIN_SCORE))
+        send_text("✅ ربات وصل است.\nزیر نظر: <b>%d</b> ارز (پرحجم‌ترین‌های بایننس)\n"
+                  "هشدار روی: %s (۵م فقط برای تایید)\n"
+                  "حداقل امتیاز: %g/10 · حداکثر %d نوتیف در روز\n"
+                  "روزها ممکنه ساکت باشه — همینه که قرار بود باشه."
+                  % (len(symbols), ", ".join(ALERT_TFS), MIN_SCORE, DAILY_CAP))
         return
 
     state = load_state()
-    now_ms = time.time() * 1000
-    sent = 0
-    for sym in SYMBOLS:
-        if sent >= MAX_PER_RUN:
-            print("run cap reached")
-            break
+    now = time.time()
+    daily_report(state, now)
+
+    candidates = []
+    for sym in symbols:
         try:
-            hit = examine(sym, state, now_ms)
+            found, by_tf = scan(sym)
         except Exception as e:      # noqa: BLE001 - one bad symbol must not stop the rest
             print("%s failed: %s" % (sym, e))
             continue
-        if not hit:
-            print("%s quiet" % sym)
+        settle(state, sym, by_tf)
+        candidates.extend(found)
+
+    print("scanned %d symbols, %d candidate(s) at price" % (len(symbols), len(candidates)))
+
+    # When Bitcoin moves, a hundred pairs move with it. Ranking first and
+    # sending only the best keeps a correlated hour from emptying itself into
+    # the chat.
+    candidates.sort(key=lambda c: -c["pts"])
+
+    sent = 0
+    for c in candidates:
+        if sent >= MAX_PER_RUN or state["day"].get("sent", 0) >= DAILY_CAP:
+            break
+        sym, z = c["symbol"], c["z"]
+        key = "%s|%s|%s|%d" % (sym, z["tf"], z["side"], z["formed"])
+        if key in state["zones"]:
             continue
-        z, pts, agree, ks, price = hit
-        png = draw(sym, ks, z, pts, agree)
-        send_photo(png, caption(sym, z, pts, agree, price))
+        if now - state["symbol_last"].get(sym, 0) < COOLDOWN_MIN * 60:
+            continue
+
+        d = base_delta(sym, z)
+        if d is None:
+            continue
+        # Required: the flow inside the base must have pointed the OPPOSITE way
+        # from the exit. Sellers were being filled and price still rose -- that
+        # is the difference between a level someone defended and a level price
+        # merely passed.
+        if (z["side"] == "demand" and d > -0.10) or (z["side"] == "supply" and d < 0.10):
+            print("%s %s: flow agreed with the exit, skipped" % (sym, z["tf"]))
+            continue
+        pts = score(z, len(c["agree"]), d)
+        if pts < MIN_SCORE:
+            continue
+        z["delta"] = d
+
+        png = draw(sym, c["ks"], z, pts, c["agree"])
+        send_photo(png, caption(sym, z, pts, c["agree"], c["price"]))
+
+        state["zones"][key] = now
+        state["symbol_last"][sym] = now
+        state["day"]["sent"] = state["day"].get("sent", 0) + 1
+        state["open"][key] = {"symbol": sym, "tf": z["tf"], "side": z["side"],
+                              "top": z["top"], "bot": z["bot"],
+                              "at": int(now * 1000), "pts": pts}
         sent += 1
         print("alerted %s %s %s %.1f" % (sym, z["tf"], z["side"], pts))
+
     save_state(state)
-    print("done, %d alert(s)" % sent)
+    print("done, %d alert(s), %d open" % (sent, len(state["open"])))
 
 
 if __name__ == "__main__":
