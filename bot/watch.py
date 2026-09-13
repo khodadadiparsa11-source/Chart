@@ -101,13 +101,12 @@ MIN_IMPULSE = 3.00               # how far price ran from the zone afterwards,
                                  # in base heights, before coming back
 NEAR = float(env("NEAR", "0.0005"))   # 0.05% counts as "arrived"
 LOOKBACK = 20                    # candles forming "normal"
-SCAN = 200                       # A zone is only findable while it is still
-                                 # inside the window, and at 100 candles a
-                                 # perfectly good level an hour older than that
-                                 # is invisible. Two hundred costs one extra
-                                 # unit of weight per request -- 800 a run,
-                                 # still a fraction of what is allowed -- and
-                                 # loosens no rule at all.
+SCAN = 500                       # A zone is only findable while it is still
+                                 # inside the window, so the window is the
+                                 # inventory. Binance charges the same weight
+                                 # for anything from 101 to 500 candles, so 500
+                                 # is five times the history for exactly what
+                                 # 200 cost -- and it loosens no rule at all.
 
 # Judging an alert afterwards: from the moment price arrived, did it leave the
 # band by a full zone height before trading a full zone height through it?
