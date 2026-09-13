@@ -82,6 +82,7 @@
   <button id="hotBtn" class="on">هایلایت حجم</button>
   <button id="dBtn" class="on">دلتا</button>
   <button id="fpBtn" class="on">فوت‌پرینت</button>
+  <button id="absBtn" class="on">جذب</button>
   <button id="lineBtn">خط</button>
   <button id="homeBtn">آخرین</button>
   <div class="tfs" id="tfs"></div>
@@ -102,7 +103,7 @@
 
 <footer>
   <span>بایننس — حجم واقعی <span id="dot" class="dot"></span><span id="state">…</span></span>
-  <span><span id="tfNote"></span> <span style="opacity:.55">v7 · فوت‌پرینت کامل</span></span>
+  <span><span id="tfNote"></span> <span style="opacity:.55">v8 · جذب</span></span>
 </footer>
 
 <script>
@@ -133,7 +134,14 @@ let tf = TFS[0], symbol = 'BTCUSDT', highlight = true;
 let bars = [], ws = null, hostIdx = 0, wsIdx = 0, reconnect = null;
 let view = {count:120, right:0};      // right = bars hidden past the right edge
 let cross = null, follow = true;
-let deltaOn = true, fpOn = true, lineMode = false;
+let deltaOn = true, fpOn = true, lineMode = false, absOn = true;
+
+// Absorption: heavy volume whose aggressor disagrees with where the candle
+// closed. Price rose while selling dominated means someone large was filling
+// the other way behind the move. These thresholds keep it to real imbalances —
+// without the second one, every candle with a slightly negative delta boxes.
+const ABS_VOL   = 1.8;    // times the recent normal volume
+const ABS_RATIO = 0.15;   // |delta| as a share of the candle's traded volume
 let crossY = null, levels = [];
 let vel = 0, glide = null;
 let scale = {hi:1, lo:0, priceH:1, plotH:1, plotW:1, bw:1, start:0, end:0};
@@ -144,7 +152,7 @@ const priceAt = py => scale.hi - (py - PAD_T)/scale.priceH * (scale.hi - scale.l
 const SKEY = 'chart.prefs.v1';
 function savePrefs(){
   try{ localStorage.setItem(SKEY, JSON.stringify(
-    {symbol, tf:tf.id, highlight, deltaOn, fpOn, count:Math.round(view.count)})); }catch(e){}
+    {symbol, tf:tf.id, highlight, deltaOn, fpOn, absOn, count:Math.round(view.count)})); }catch(e){}
 }
 function loadPrefs(){
   try{
@@ -154,6 +162,7 @@ function loadPrefs(){
     if (typeof p.highlight === 'boolean') highlight = p.highlight;
     if (typeof p.deltaOn === 'boolean') deltaOn = p.deltaOn;
     if (typeof p.fpOn === 'boolean') fpOn = p.fpOn;
+    if (typeof p.absOn === 'boolean') absOn = p.absOn;
     if (p.count) view.count = p.count;
   }catch(e){}
 }
@@ -395,6 +404,40 @@ function render(){
   }
 
   // crosshair
+  // Absorption boxes. The border is solid where the flow was counted from real
+  // trades and dashed where it was estimated from one-second candles, because
+  // the two are not equally strong evidence and should not look alike.
+  if (absOn){
+    for (let i=start;i<end;i++){
+      const b2 = bars[i];
+      const exact = flow.has(b2.time);
+      const e = flow.get(b2.time) || approx.get(b2.time);
+      if (!e) continue;
+      const traded = e.buy + e.sell;
+      if (!traded) continue;
+      const nv = normalVolume(i);
+      if (!nv || b2.volume < nv * ABS_VOL) continue;
+      const d = e.buy - e.sell;
+      if (Math.abs(d)/traded < ABS_RATIO) continue;
+      const rose = b2.close > b2.open, fell = b2.close < b2.open;
+      if (!((rose && d < 0) || (fell && d > 0))) continue;
+
+      const cx = x(i);
+      const yTop = y(b2.high), yBot = y(b2.low);
+      const col = rose ? '#e5484d' : '#0bb07b';   // the side that was hidden
+      ctx.strokeStyle = col;
+      ctx.lineWidth = exact ? 1.6 : 1;
+      ctx.setLineDash(exact ? [] : [3,3]);
+      const bx0 = cx - body/2 - 3, bw2 = body + 6;
+      ctx.strokeRect(Math.round(bx0)+0.5, Math.round(yTop)-3.5,
+                     Math.round(bw2), Math.round(yBot-yTop)+7);
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
+      ctx.fillStyle = (rose ? 'rgba(229,72,77,' : 'rgba(11,176,123,') + '0.07)';
+      ctx.fillRect(bx0, yTop-3, bw2, (yBot-yTop)+7);
+    }
+  }
+
   // saved levels
   for (const L of levels){
     const ly2 = y(L);
@@ -799,6 +842,7 @@ $('sym').value = symbol;
 $('hotBtn').className = highlight ? 'on' : '';
 $('dBtn').className   = deltaOn   ? 'on' : '';
 $('fpBtn').className  = fpOn      ? 'on' : '';
+$('absBtn').className = absOn     ? 'on' : '';
 
 TFS.forEach(t => {
   const b = document.createElement('button');
@@ -824,6 +868,8 @@ $('dBtn').onclick = () => { deltaOn = !deltaOn;
 $('fpBtn').onclick = () => { fpOn = !fpOn;
   $('fpBtn').className = fpOn ? 'on' : ''; savePrefs(); render();
   if (fpOn) fillApprox(); };
+$('absBtn').onclick = () => { absOn = !absOn;
+  $('absBtn').className = absOn ? 'on' : ''; savePrefs(); render(); };
 $('lineBtn').onclick = () => { lineMode = !lineMode;
   $('lineBtn').className = lineMode ? 'on' : '';
   $('lineBtn').textContent = lineMode ? 'خط ✓' : 'خط'; };
