@@ -1,8 +1,9 @@
-name: volume watch
+name: zone watch
 
 # Every five minutes is the shortest schedule GitHub allows, and it can run
-# several minutes late under load. That suits 5m and 15m candles; it is not a
-# substitute for a live feed.
+# several minutes late under load. The alert fires when price RETURNS to a zone,
+# and a zone stays live for hours, so a few minutes of lateness costs little.
+# It is still not a live feed, and 1m zones are out of reach by design.
 on:
   schedule:
     - cron: '*/5 * * * *'
@@ -14,23 +15,46 @@ on:
         default: false
 
 concurrency:
-  group: volume-watch
+  group: zone-watch
   cancel-in-progress: false
 
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: bot/requirements.txt
+
+      - run: pip install -q -r bot/requirements.txt
+
+      # Which zones have already been alerted has to survive between runs, or
+      # the same zone is reported every five minutes for as long as price sits
+      # on it. The cache carries that file forward; losing it costs one
+      # duplicate message, nothing worse.
+      - uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: zone-state-${{ github.run_id }}
+          restore-keys: zone-state-
+
       - name: watch
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SYMBOLS: ${{ vars.SYMBOLS }}
-          INTERVAL: ${{ vars.INTERVAL }}
+          MIN_SCORE: ${{ vars.MIN_SCORE }}
+          COOLDOWN_MIN: ${{ vars.COOLDOWN_MIN }}
           TEST: ${{ inputs.test && '1' || '0' }}
         run: python bot/watch.py
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state
+          key: zone-state-${{ github.run_id }}
