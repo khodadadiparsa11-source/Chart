@@ -1,9 +1,13 @@
 # Telegram zone watch
 
 Every five minutes it scans the **hundred busiest USDT pairs on Binance** on
-**5m, 15m, 1h and 4h**, and sends a message only when price has **come back** to
-a zone worth an order — with a picture of the chart, a box around the zone, a
-score out of ten, and the symbol name.
+**5m, 15m, 1h and 4h**, and sends a message **the moment a zone forms** — with a
+picture of the chart, a box around the zone, a score out of ten, and the symbol
+name.
+
+The message arrives while price is still far away, which is the point: it is
+not an entry signal, it is a level to leave a limit order at and walk away
+from. Someone working a job cannot watch for the touch.
 
 The list is ranked by real 24h turnover, not chosen at random: on a thin pair
 one participant can draw a heavy base in a tight range with nothing behind it —
@@ -23,8 +27,8 @@ Three things together, never one on its own:
 2. **An exit** — the next candle leaves the base with half again the normal
    range and half again the normal volume, closing a full base height clear of
    it.
-3. **A run** — price then travelled at least three base heights away. A zone
-   that never moved price has nothing behind it.
+3. **A push** — the exit closed at least one and a half base heights past the
+   band. An exit that barely cleared it did not really leave.
 4. **Silence since** — price has not traded back through. A zone that has
    already been revisited is spent and is dropped, not alerted.
 5. **Flow against the exit** — the aggressor split inside the base points the
@@ -47,8 +51,9 @@ it is a level.
 Every run prints its funnel, so silence can be read instead of guessed at:
 
 ```
-gates: base=45990  volume=393  exit=38  clear=32  fresh=6  impulse=6
+gates: base=45990  volume=393  exit=38  clear=32  fresh=6  push=6
 exit gate at other thresholds: 1.2x=55  1.5x=38  1.8x=30  2.0x=25  2.5x=17
+exit push at other thresholds: 1.0x=6  1.5x=5  2.0x=4  3.0x=2
 ```
 
 `volume` is the heart of it — of forty-six thousand quiet stretches, under four
@@ -63,11 +68,17 @@ the chat at once.
 
 ## Outcomes
 
-Every alert is followed afterwards using candles the next runs already fetch.
-From the moment price arrived: leaving the band by one zone height counts as a
+Every zone sent is followed afterwards using candles the next runs already
+fetch, in two steps.
+
+First: **does price ever come back to it?** A zone price never revisits cost
+nothing and earned nothing, and is counted as such rather than quietly
+forgotten — reporting a level early means accepting that some never fill.
+
+Then, once price arrives: leaving the band by one zone height counts as a
 **reaction**, trading one zone height through it counts as a **failure**, and
 neither within 24 candles counts as **no reaction**. One tally a day reports
-the count.
+all four counts.
 
 It is a measurement of whether price reacted, not a win rate — no stop, no
 target, no spread. More alerts prove nothing on their own; what happened after

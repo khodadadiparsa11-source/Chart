@@ -97,9 +97,17 @@ EXIT_RANGE = float(env("EXIT_RANGE", "1.50"))   # exit candle range vs normal.
 EXIT_VOL = 1.50                  # exit candle volume vs normal
 EXIT_CLEAR = 1.00                # how far past the base the exit must close,
                                  # measured in base heights
-MIN_IMPULSE = 3.00               # how far price ran from the zone afterwards,
-                                 # in base heights, before coming back
-NEAR = float(env("NEAR", "0.0005"))   # 0.05% counts as "arrived"
+# How hard the exit closed past the band, in base heights. The old rule asked
+# how far price ran AFTERWARDS -- a real measure, but one that does not exist
+# yet at the moment a zone is born, which is now when the message is sent. This
+# is the same question asked of the only candle that has happened.
+MIN_PUSH = float(env("MIN_PUSH", "1.50"))
+PUSH_TRIALS = (1.0, 1.5, 2.0, 3.0)
+
+# A zone is reported once, on the run after the candle that made it. Two
+# candles of slack cover a late or skipped run without reporting the whole
+# standing inventory every time.
+NEW_BARS = int(env("NEW_BARS", "2"))
 LOOKBACK = 20                    # candles forming "normal"
 SCAN = 500                       # A zone is only findable while it is still
                                  # inside the window, so the window is the
@@ -108,9 +116,11 @@ SCAN = 500                       # A zone is only findable while it is still
                                  # is five times the history for exactly what
                                  # 200 cost -- and it loosens no rule at all.
 
-# Judging an alert afterwards: from the moment price arrived, did it leave the
-# band by a full zone height before trading a full zone height through it?
-OUT_WAIT = 24                    # candles allowed before it counts as no reaction
+# Judging an alert afterwards, in two steps: did price ever come back to the
+# band at all, and once it did, did it leave by a full zone height before
+# trading a full zone height through it?
+OUT_WAIT = 24                    # candles after the touch before it counts flat
+NEVER_AFTER = 200                # candles without a touch before giving up
 
 STATE_FILE = env("STATE_FILE", "state/seen.json")
 CHART_URL = "https://khodadadiparsa11-source.github.io/Chart/"
@@ -266,7 +276,7 @@ def mean(xs):
     return sum(xs) / len(xs) if xs else 0.0
 
 
-FUNNEL = ("base", "volume", "exit", "clear", "fresh", "impulse")
+FUNNEL = ("base", "volume", "exit", "clear", "fresh", "push")
 
 # The exit gate is where almost everything dies, so each run also counts what
 # WOULD have passed at other thresholds. Changing a number to see what happens
@@ -369,25 +379,22 @@ def find_zones(ks, tf, funnel=None):
         # A zone that never moved price is a zone with nothing behind it. This
         # one has to have already produced a run of several base heights before
         # price came back to it -- it has shown once that it can turn price.
-        imp = max(run_far, ((ex["c"] - top) if side == "demand" else (bot - ex["c"])) / height)
-        if imp < MIN_IMPULSE:
+        push = ((ex["c"] - top) if side == "demand" else (bot - ex["c"])) / height
+        for t in PUSH_TRIALS:
+            if push >= t:
+                tick("push@%.1f" % t)
+        if push < MIN_PUSH:
             continue
-        tick("impulse")
+        tick("push")
 
         zones.append({
             "tf": tf, "side": side, "top": top, "bot": bot,
             "start": i - run + 1, "exit": i + 1, "bars": run,
             "formed": base[0]["t"], "bvol": bvol, "exr": exr, "exv": exv,
-            "imp": imp,
+            "push": push, "ran": run_far,
             "tight": mean(rng[i - run + 1:i + 1]) / nrng,
         })
     return zones
-
-
-def price_arrived(z, price):
-    """Has price come back to the edge of the zone without breaking through?"""
-    pad = z["top"] * NEAR
-    return z["bot"] - pad <= price <= z["top"] + pad
 
 
 def overlaps(a, b):
@@ -549,7 +556,11 @@ def scan(symbol):
             continue
         stats["zones"] += len(zs)
         for z in zs:
-            if not price_arrived(z, price):
+            # Only zones born in the last candle or two. The message is meant
+            # to arrive while the zone is new and price is still far from it,
+            # so a limit order can be left there; reporting the standing
+            # inventory would send the same levels every five minutes.
+            if z["exit"] < len(ks) - 2 - NEW_BARS:
                 continue
             stats["arrived"] += 1
             z["span"] = (z["exit"] - z["start"] + 1) * (ks[1]["t"] - ks[0]["t"])
@@ -575,13 +586,17 @@ def scan(symbol):
 
 
 def settle(state, symbol, by_tf):
-    """Did the alerts already sent react off their band, or trade through it?
+    """Follow every zone already sent, in two steps.
 
-    Every watched symbol's candles are already in hand, so judging an old alert
-    costs nothing. The test is deliberately crude and is described as what it
-    is: one zone height away counts as a reaction, one zone height through
-    counts as a failure, and neither within a day of candles counts as no
-    reaction at all.
+    A zone is reported the moment it forms, with price still far away, so the
+    first question is whether price ever comes back to it at all -- a zone
+    price never revisits was a message that cost nothing and earned nothing,
+    and it is counted separately rather than quietly forgotten. Once price does
+    arrive, the second question is the one that matters: one zone height away
+    counts as a reaction, one zone height through counts as a failure, neither
+    within a day of candles counts as no reaction.
+
+    Every watched symbol's candles are already in hand, so this costs nothing.
     """
     for key, r in list(state["open"].items()):
         if r["symbol"] != symbol:
@@ -589,12 +604,35 @@ def settle(state, symbol, by_tf):
         ks = by_tf.get(r["tf"])
         if not ks:
             continue
-        after = [k for k in ks if k["t"] > r["at"]]
-        if not after:
-            continue
         h = r["top"] - r["bot"]
+        if h <= 0:
+            del state["open"][key]
+            continue
+
+        # step one: has price come back to the band yet?
+        if not r.get("touched"):
+            waited = 0
+            for k in ks:
+                if k["t"] <= r["at"]:
+                    continue
+                waited += 1
+                if k["l"] <= r["top"] and k["h"] >= r["bot"]:
+                    r["touched"] = k["t"]
+                    break
+            if not r.get("touched"):
+                if waited >= NEVER_AFTER:
+                    state["day"]["never"] = state["day"].get("never", 0) + 1
+                    print("outcome %s %s %s -> never returned" % (symbol, r["tf"], r["side"]))
+                    del state["open"][key]
+                continue
+
+        # step two: did it react off the band, or trade through it?
         verdict = None
-        for i, k in enumerate(after):
+        seen = 0
+        for k in ks:
+            if k["t"] <= r["touched"]:
+                continue
+            seen += 1
             if r["side"] == "demand":
                 if k["h"] >= r["top"] + h:
                     verdict = "reacted"
@@ -605,14 +643,11 @@ def settle(state, symbol, by_tf):
                     verdict = "reacted"
                 elif k["h"] >= r["top"] + h:
                     verdict = "failed"
-            if verdict:
-                break
-            if i + 1 >= OUT_WAIT:
-                verdict = "flat"
+            if verdict or seen >= OUT_WAIT:
+                verdict = verdict or "flat"
                 break
         if verdict:
-            day = state["day"]
-            day[verdict] = day.get(verdict, 0) + 1
+            state["day"][verdict] = state["day"].get(verdict, 0) + 1
             print("outcome %s %s %s -> %s" % (symbol, r["tf"], r["side"], verdict))
             del state["open"][key]
 
@@ -625,22 +660,26 @@ def daily_report(state, now):
         return
     if day.get("date"):
         sent = day.get("sent", 0)
-        react, fail, flat = day.get("reacted", 0), day.get("failed", 0), day.get("flat", 0)
-        done = react + fail + flat
+        react = day.get("reacted", 0)
+        fail = day.get("failed", 0)
+        flat = day.get("flat", 0)
+        never = day.get("never", 0)
+        done = react + fail + flat + never
         if sent or done:
+            waiting = sum(1 for r in state["open"].values() if not r.get("touched"))
             send_text(
                 "📋 <b>کارنامه‌ی {d}</b>\n\n"
-                "نوتیف ارسالی: <b>{sent}</b>\n"
-                "بسته‌شده: <b>{done}</b>\n"
-                "  واکنش داد: <b>{react}</b>\n"
-                "  رد شد: <b>{fail}</b>\n"
-                "  بی‌واکنش: <b>{flat}</b>\n"
-                "هنوز باز: <b>{open}</b>\n\n"
+                "زون ارسالی: <b>{sent}</b>\n\n"
+                "قیمت برگشت و <b>واکنش داد</b>: <b>{react}</b>\n"
+                "قیمت برگشت و <b>رد شد</b>: <b>{fail}</b>\n"
+                "برگشت ولی تکون نخورد: <b>{flat}</b>\n"
+                "اصلاً برنگشت: <b>{never}</b>\n\n"
+                "هنوز منتظر برگشت قیمت: <b>{waiting}</b>\n\n"
                 "<i>«واکنش» یعنی قیمت به اندازه‌ی یک ارتفاعِ محدوده ازش دور شد "
                 "قبل از اینکه به همون اندازه ازش رد بشه. این یک اندازه‌گیریه، "
-                "نه وین‌ریت — استاپ و تارگت واقعی حساب نشده.</i>"
-                .format(d=day.get("date"), sent=sent, done=done, react=react,
-                        fail=fail, flat=flat, open=len(state["open"])))
+                "نه وین‌ریت — استاپ و تارگت و اسپرد واقعی توش نیست.</i>"
+                .format(d=day.get("date"), sent=sent, react=react, fail=fail,
+                        flat=flat, never=never, waiting=waiting))
     state["day"] = {"date": today}
 
 
@@ -652,22 +691,28 @@ def caption(symbol, z, pts, agree, price):
     arrow = "🟦" if z["side"] == "demand" else "🟧"
     d = z.get("delta", 0.0)
     flow = "خریدار" if d > 0 else "فروشنده"
+    edge = z["top"] if z["side"] == "demand" else z["bot"]
+    away = abs(price - edge) / price * 100
     return (
         "{a} <b>{sym}</b> — {kind}\n"
         "امتیاز <b>{pts}/10</b> · تایم‌فریم <b>{tf}</b>\n\n"
         "محدوده <code>{bot} — {top}</code>\n"
-        "قیمت الان <code>{price}</code> — رسیده به محدوده\n\n"
+        "قیمت الان <code>{price}</code> — <b>{away:.2f}٪</b> فاصله تا محدوده\n\n"
         "بیس: <b>{bars}</b> کندل، حجم <b>{bvol:.1f}x</b> نرمال، طول <b>{tight:.0%}</b> نرمال\n"
         "خروج: طول <b>{exr:.1f}x</b>، حجم <b>{exv:.1f}x</b>\n"
-        "حرکتی که از این محدوده گرفت: <b>{imp:.1f} برابر</b> ارتفاع محدوده\n"
+        "فشار کندل خروج: <b>{push:.1f} برابر</b> ارتفاع محدوده\n"
         "جریان داخل بیس: <b>{flow}</b> ({dp:.0f}٪) — تقریبی\n"
-        "{agree}\n"
+        "{agree}\n\n"
+        "<b>الان وارد نشو.</b> قیمت هنوز به محدوده نرسیده. اردر لیمیت داخل "
+        "محدوده بگذار و استاپ را پشتش.\n"
         "<a href=\"{url}\">باز کردن چارت</a>\n\n"
-        "<i>امتیاز یک رتبه‌بندی است، نه احتمال. هیچ بک‌تستی پشتش نیست.</i>"
+        "<i>امتیاز یک رتبه‌بندی است، نه احتمال. هیچ بک‌تستی پشتش نیست. "
+        "ممکن است قیمت هرگز به این محدوده برنگردد.</i>"
     ).format(a=arrow, sym=symbol, kind=kind, pts=int(round(pts)), tf=z["tf"],
              bot=fmt(z["bot"]), top=fmt(z["top"]), price=fmt(price),
              bars=z["bars"], bvol=z["bvol"], tight=z["tight"],
-             exr=z["exr"], exv=z["exv"], imp=z["imp"], flow=flow, dp=abs(d) * 100,
+             exr=z["exr"], exv=z["exv"], push=z["push"], flow=flow, dp=abs(d) * 100,
+             away=away,
              agree=("تایم‌فریم‌های هم‌جهت: <b>%s</b>" % ", ".join(agree))
                    if agree else "بدون هم‌پوشانی با تایم‌فریم دیگر",
              url=CHART_URL)
@@ -731,6 +776,9 @@ def main():
     print("exit gate at other thresholds: "
           + "  ".join("%.1fx=%d" % (t, funnel.get("exit@%.1f" % t, 0))
                       for t in EXIT_TRIALS))
+    print("exit push at other thresholds: "
+          + "  ".join("%.1fx=%d" % (t, funnel.get("push@%.1f" % t, 0))
+                      for t in PUSH_TRIALS))
 
     # When Bitcoin moves, a hundred pairs move with it. Ranking first and
     # sending only the best keeps a correlated hour from emptying itself into
@@ -771,7 +819,7 @@ def main():
         state["day"]["sent"] = state["day"].get("sent", 0) + 1
         state["open"][key] = {"symbol": sym, "tf": z["tf"], "side": z["side"],
                               "top": z["top"], "bot": z["bot"],
-                              "at": int(now * 1000), "pts": pts}
+                              "at": z["formed"], "pts": pts}
         sent += 1
         print("alerted %s %s %s %.1f" % (sym, z["tf"], z["side"], pts))
 
