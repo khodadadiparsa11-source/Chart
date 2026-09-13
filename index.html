@@ -246,8 +246,8 @@ function render(){
 
   // time axis
   ctx.fillStyle = '#8b949e'; ctx.textAlign = 'center';
-  const every = Math.max(1, Math.round(n/5));
-  for (let i=start;i<end;i+=every){
+  const every = Math.max(1, Math.ceil(74/bw));
+  for (let i=start+((n-1)%every);i<end;i+=every){
     const d = new Date(bars[i].time*1000);
     const lbl = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')
               + (tf.fold<60 && tf.base==='1s' ? ':'+String(d.getSeconds()).padStart(2,'0') : '');
@@ -350,18 +350,29 @@ function fold(raw){
 }
 
 // ─── Data ───────────────────────────────────────────────────────────────────
+async function fetchPage(host, endTime){
+  let url = host+'/api/v3/klines?symbol='+symbol+'&interval='+tf.base+'&limit=1000';
+  if (endTime) url += '&endTime='+endTime;
+  const res = await fetch(url, {cache:'no-store'});
+  if (!res.ok) throw new Error('HTTP '+res.status);
+  return (await res.json()).map(a => ({
+    time:Math.floor(a[0]/1000), open:+a[1], high:+a[2], low:+a[3], close:+a[4], volume:+a[5]
+  }));
+}
 async function loadHistory(){
-  const limit = tf.fold > 1 ? 1000 : 500;
+  // A second-based chart needs several pages to cover a useful stretch of time;
+  // a minute-based one already gets sixteen hours from a single page.
+  const pages = tf.base === '1s' ? 4 : 1;
   let err;
   for (let k=0;k<HOSTS.length;k++){
     const host = HOSTS[(hostIdx+k)%HOSTS.length];
     try{
-      const res = await fetch(host+'/api/v3/klines?symbol='+symbol+'&interval='+tf.base+'&limit='+limit,
-                              {cache:'no-store'});
-      if (!res.ok) throw new Error('HTTP '+res.status);
-      const raw = (await res.json()).map(a => ({
-        time:Math.floor(a[0]/1000), open:+a[1], high:+a[2], low:+a[3], close:+a[4], volume:+a[5]
-      }));
+      let raw = await fetchPage(host, null);
+      for (let p=1; p<pages && raw.length; p++){
+        const older = await fetchPage(host, raw[0].time*1000 - 1);
+        if (!older.length) break;
+        raw = older.concat(raw);
+      }
       hostIdx = (hostIdx+k)%HOSTS.length;
       bars = fold(raw);
       // The newest folded bucket is partial and the stream cannot tell which of
@@ -423,6 +434,7 @@ async function reload(){
   state('بارگذاری…');
   if (await loadHistory()){
     view.right = 0; follow = true; cross = null;
+    view.count = Math.min(160, Math.max(30, bars.length));
     resize();
     showStats(bars.length-1);
     connect();
