@@ -429,10 +429,14 @@ def base_delta(symbol, z):
     for k in rows:
         if k["v"] <= 0:
             continue
-        if k["c"] < k["o"]:
-            sell += k["v"]
-        else:
+        if k["c"] > k["o"]:
             buy += k["v"]
+        elif k["c"] < k["o"]:
+            sell += k["v"]
+        # A candle that closed exactly where it opened says nothing about which
+        # side was the aggressor. Counting it as buying -- which is what an
+        # `else` branch quietly does -- biases every reading positive, and a
+        # base is precisely where flat candles pile up. It is dropped instead.
     traded = buy + sell
     return (buy - sell) / traded if traded else 0.0
 
