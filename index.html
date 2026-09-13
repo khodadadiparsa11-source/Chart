@@ -94,7 +94,7 @@
 
 <footer>
   <span>بایننس — حجم واقعی <span id="dot" class="dot"></span><span id="state">…</span></span>
-  <span><span id="tfNote"></span> <span style="opacity:.55">v3 · فوت‌پرینت</span></span>
+  <span><span id="tfNote"></span> <span style="opacity:.55">v4 · فوت‌پرینت</span></span>
 </footer>
 
 <script>
@@ -260,32 +260,62 @@ function render(){
     ctx.fillRect(cx-body/2, vt, body, plotH-vt);
   }
 
-  // Footprint: what traded at each price inside the candle, and which side was
-  // the aggressor. Only drawn once the bars are wide enough to read — below
-  // that it is a smear, and a smear is worse than nothing.
-  if (fpOn && bw >= 15){
+  // Footprint: what traded at each price inside the candle, split by which side
+  // was the aggressor. Selling grows left of the candle's centre, buying right,
+  // so the imbalance at a price is a shape rather than a shade. Rows are
+  // regrouped to the zoom level, because a fixed row height is either invisible
+  // or unreadable depending on how far in you are.
+  if (fpOn && bw >= 9){
+    const dispTick = Math.max(lvlTick, niceStep((hi-lo)/26));
+    const rows = new Map();       // bar index -> Map(level -> {b,s})
     let cellMax = 0;
     for (let i=start;i<end;i++){
       const e = flow.get(bars[i].time);
       if (!e) continue;
-      for (const c of e.lv.values()){ const t = c.b + c.s; if (t > cellMax) cellMax = t; }
+      const g = new Map();
+      for (const [L, c] of e.lv){
+        const k = Math.floor(L/dispTick)*dispTick;
+        let a = g.get(k);
+        if (!a){ a = {b:0, s:0}; g.set(k, a); }
+        a.b += c.b; a.s += c.s;
+        const t = a.b + a.s;
+        if (t > cellMax) cellMax = t;
+      }
+      rows.set(i, g);
     }
     if (cellMax > 0){
-      const cellH = Math.max(2, Math.abs(y(0) - y(lvlTick)));
-      for (let i=start;i<end;i++){
-        const e = flow.get(bars[i].time);
-        if (!e) continue;
+      const cellH = Math.max(2, Math.abs(y(0) - y(dispTick)) - 1);
+      const half = body/2;
+      const showNums = bw >= 54 && cellH >= 9;
+      ctx.font = Math.min(10, Math.max(7, cellH-2)) + 'px Vazirmatn, sans-serif';
+      ctx.textBaseline = 'middle';
+      for (const [i, g] of rows){
         const cx = x(i);
-        for (const [L, c] of e.lv){
+        for (const [L, c] of g){
           const t = c.b + c.s;
           if (!t) continue;
-          const yTop = y(L + lvlTick);
+          const yTop = y(L + dispTick);
           if (yTop < -cellH || yTop > priceH + PAD_T) continue;
-          const a = 0.12 + 0.68 * Math.min(1, t/cellMax);
-          ctx.fillStyle = (c.b >= c.s ? 'rgba(11,176,123,' : 'rgba(229,72,77,') + a.toFixed(2) + ')';
-          ctx.fillRect(cx - body/2, yTop, body, cellH);
+          const share = Math.min(1, t/cellMax);
+          const ws = half * (c.s/t) * share, wb = half * (c.b/t) * share;
+          if (ws > 0.4){
+            ctx.fillStyle = 'rgba(229,72,77,' + (0.35 + 0.5*share).toFixed(2) + ')';
+            ctx.fillRect(cx - ws, yTop, ws, cellH);
+          }
+          if (wb > 0.4){
+            ctx.fillStyle = 'rgba(11,176,123,' + (0.35 + 0.5*share).toFixed(2) + ')';
+            ctx.fillRect(cx, yTop, wb, cellH);
+          }
+          if (showNums){
+            ctx.fillStyle = 'rgba(230,237,243,.85)';
+            ctx.textAlign = 'right';
+            ctx.fillText(shortVol(c.s), cx - 2, yTop + cellH/2);
+            ctx.textAlign = 'left';
+            ctx.fillText(shortVol(c.b), cx + 2, yTop + cellH/2);
+          }
         }
       }
+      ctx.textAlign = 'center';
     }
   }
 
@@ -313,6 +343,12 @@ function render(){
   }
 
   // crosshair
+  if (fpOn){
+    const need = bw < 9 && flow.size > 0;
+    $('fpBtn').textContent = need ? 'فوت‌پرینت ⤢' : 'فوت‌پرینت';
+    $('fpBtn').title = need ? 'برای دیدن، دو انگشتی زوم کن' : '';
+  } else $('fpBtn').textContent = 'فوت‌پرینت';
+
   if (cross != null && cross >= start && cross < end){
     const cx = x(cross);
     ctx.strokeStyle = 'rgba(139,148,158,.55)';
