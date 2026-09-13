@@ -1,0 +1,17 @@
+{
+  "name": "چارت حجم",
+  "short_name": "چارت",
+  "description": "چارت زیر یک دقیقه با حجم واقعی و فوت‌پرینت",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0e1116",
+  "theme_color": "#0e1116",
+  "dir": "rtl",
+  "lang": "fa",
+  "icons": [
+    {"src": "icon-180.png", "sizes": "180x180", "type": "image/png"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}

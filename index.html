@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>چارت حجم — زیر یک دقیقه</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0e1116">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="چارت">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600&display=swap" rel="stylesheet">
@@ -75,6 +82,7 @@
   <button id="hotBtn" class="on">هایلایت حجم</button>
   <button id="dBtn" class="on">دلتا</button>
   <button id="fpBtn" class="on">فوت‌پرینت</button>
+  <button id="lineBtn">خط</button>
   <button id="homeBtn">آخرین</button>
   <div class="tfs" id="tfs"></div>
 </header>
@@ -94,7 +102,7 @@
 
 <footer>
   <span>بایننس — حجم واقعی <span id="dot" class="dot"></span><span id="state">…</span></span>
-  <span><span id="tfNote"></span> <span style="opacity:.55">v5 · فوت‌پرینت</span></span>
+  <span><span id="tfNote"></span> <span style="opacity:.55">v6 · اپ</span></span>
 </footer>
 
 <script>
@@ -125,7 +133,35 @@ let tf = TFS[0], symbol = 'BTCUSDT', highlight = true;
 let bars = [], ws = null, hostIdx = 0, wsIdx = 0, reconnect = null;
 let view = {count:120, right:0};      // right = bars hidden past the right edge
 let cross = null, follow = true;
-let deltaOn = true, fpOn = true;
+let deltaOn = true, fpOn = true, lineMode = false;
+let crossY = null, levels = [];
+let vel = 0, glide = null;
+let scale = {hi:1, lo:0, priceH:1, plotH:1, plotW:1, bw:1, start:0, end:0};
+const priceAt = py => scale.hi - (py - PAD_T)/scale.priceH * (scale.hi - scale.lo);
+
+// What the chart looked like last time. A tool that forgets which symbol you
+// were on is a tool you reconfigure instead of read.
+const SKEY = 'chart.prefs.v1';
+function savePrefs(){
+  try{ localStorage.setItem(SKEY, JSON.stringify(
+    {symbol, tf:tf.id, highlight, deltaOn, fpOn, count:Math.round(view.count)})); }catch(e){}
+}
+function loadPrefs(){
+  try{
+    const p = JSON.parse(localStorage.getItem(SKEY) || '{}');
+    if (p.symbol) symbol = p.symbol;
+    const t = TFS.find(x => x.id === p.tf); if (t) tf = t;
+    if (typeof p.highlight === 'boolean') highlight = p.highlight;
+    if (typeof p.deltaOn === 'boolean') deltaOn = p.deltaOn;
+    if (typeof p.fpOn === 'boolean') fpOn = p.fpOn;
+    if (p.count) view.count = p.count;
+  }catch(e){}
+}
+const LKEY = () => 'chart.levels.' + symbol;
+function loadLevels(){
+  try{ levels = JSON.parse(localStorage.getItem(LKEY()) || '[]'); }catch(e){ levels = []; }
+}
+function saveLevels(){ try{ localStorage.setItem(LKEY(), JSON.stringify(levels)); }catch(e){} }
 
 // Real order flow. Binance flags every trade with which side was the aggressor,
 // so buying and selling are counted rather than guessed from candle colour the
@@ -215,6 +251,7 @@ function render(){
   const pad = (hi-lo)*0.06; hi += pad; lo -= pad;
 
   // The page is RTL but a price chart is not: newest stays on the right.
+  scale = {hi, lo, priceH, plotH, plotW, bw, start, end};
   const x = i => plotW - (end - i) * bw + bw/2;
   const y = p => PAD_T + (hi-p)/(hi-lo) * priceH;
   const vy = v => plotH - (mv ? v/mv : 0) * volH;
@@ -350,18 +387,53 @@ function render(){
   }
 
   // crosshair
+  // saved levels
+  for (const L of levels){
+    const ly2 = y(L);
+    if (ly2 < 0 || ly2 > plotH) continue;
+    ctx.strokeStyle = 'rgba(255,159,10,.85)';
+    ctx.setLineDash([6,4]);
+    ctx.beginPath(); ctx.moveTo(0, Math.round(ly2)+0.5); ctx.lineTo(plotW, Math.round(ly2)+0.5); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,159,10,.9)';
+    ctx.fillRect(plotW, ly2-7, PAD_R, 14);
+    ctx.fillStyle = '#0e1116'; ctx.textAlign = 'left';
+    ctx.fillText(fmt(L, digits()), plotW+5, ly2);
+  }
+
   if (fpOn){
     const need = bw < 9 && flow.size > 0;
     $('fpBtn').textContent = need ? 'فوت‌پرینت ⤢' : 'فوت‌پرینت';
     $('fpBtn').title = need ? 'برای دیدن، دو انگشتی زوم کن' : '';
   } else $('fpBtn').textContent = 'فوت‌پرینت';
 
+  // crosshair, with the value it is pointing at written on each axis
   if (cross != null && cross >= start && cross < end){
     const cx = x(cross);
-    ctx.strokeStyle = 'rgba(139,148,158,.55)';
+    ctx.strokeStyle = 'rgba(139,148,158,.6)';
     ctx.setLineDash([2,3]);
     ctx.beginPath(); ctx.moveTo(Math.round(cx)+0.5, 0); ctx.lineTo(Math.round(cx)+0.5, plotH); ctx.stroke();
+    if (crossY != null && crossY < plotH){
+      ctx.beginPath(); ctx.moveTo(0, Math.round(crossY)+0.5); ctx.lineTo(plotW, Math.round(crossY)+0.5); ctx.stroke();
+    }
     ctx.setLineDash([]);
+
+    if (crossY != null && crossY < priceH + PAD_T){
+      const pv = hi - (crossY - PAD_T)/priceH * (hi-lo);
+      ctx.fillStyle = '#2b3440';
+      ctx.fillRect(plotW, crossY-8, PAD_R, 16);
+      ctx.fillStyle = '#e6edf3'; ctx.textAlign = 'left';
+      ctx.fillText(fmt(pv, digits()), plotW+5, crossY);
+    }
+    const d = new Date(bars[cross].time*1000);
+    const lbl = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')
+              + (tf.base==='1s' ? ':'+String(d.getSeconds()).padStart(2,'0') : '');
+    ctx.textAlign = 'center';
+    const tw = ctx.measureText(lbl).width + 10;
+    ctx.fillStyle = '#2b3440';
+    ctx.fillRect(Math.min(Math.max(cx-tw/2, 0), plotW-tw), plotH+1, tw, PAD_B-2);
+    ctx.fillStyle = '#e6edf3';
+    ctx.fillText(lbl, Math.min(Math.max(cx, tw/2), plotW-tw/2), plotH+10);
   }
 }
 
@@ -389,7 +461,7 @@ function showStats(i){
 function statsForCursor(){ showStats(cross != null ? cross : bars.length-1); }
 
 // ─── Touch and mouse ────────────────────────────────────────────────────────
-let drag = null, pinch = null;
+let drag = null, pinch = null, lastTap = 0;
 function barAt(px){
   const {start,end} = visible(), plotW = W - PAD_R, bw = plotW/view.count;
   const i = end - Math.ceil((plotW - px)/bw);
@@ -397,21 +469,60 @@ function barAt(px){
 }
 function clampView(){
   view.count = Math.max(6, Math.min(600, Math.round(view.count)));
-  view.right = Math.max(0, Math.min(Math.max(0, bars.length-10), Math.round(view.right)));
+  view.right = Math.max(0, Math.min(Math.max(0, bars.length-6), Math.round(view.right)));
   follow = view.right === 0;
 }
+
+// After a flick the chart keeps moving and settles, the way a scroll view does.
+// Without it every pan stops dead the instant the finger lifts, which is the
+// single thing that makes a homemade chart feel homemade.
+function stopGlide(){ if (glide){ cancelAnimationFrame(glide); glide = null; } }
+function startGlide(){
+  stopGlide();
+  const step = () => {
+    vel *= 0.94;
+    if (Math.abs(vel) < 0.02){ glide = null; return; }
+    const bw = (W-PAD_R)/view.count;
+    view.right += vel/bw;
+    clampView();
+    render();
+    glide = requestAnimationFrame(step);
+  };
+  glide = requestAnimationFrame(step);
+}
+
+function toggleLevelAt(py){
+  const p = priceAt(py);
+  const tolP = (scale.hi-scale.lo) * 8 / Math.max(1, scale.priceH);
+  const near = levels.findIndex(L => Math.abs(L-p) <= tolP);
+  if (near >= 0) levels.splice(near, 1);
+  else levels.push(+p.toFixed(digits()));
+  saveLevels(); render();
+}
+
 $('wrap').addEventListener('touchstart', e => {
+  stopGlide();
+  const r = cv.getBoundingClientRect();
   if (e.touches.length === 2){
     pinch = {d:Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
                           e.touches[0].clientY-e.touches[1].clientY), c:view.count};
     drag = null;
   } else {
-    const r = cv.getBoundingClientRect();
-    drag = {x:e.touches[0].clientX, right:view.right, moved:0};
-    cross = barAt(e.touches[0].clientX - r.left);
+    const px = e.touches[0].clientX - r.left, py = e.touches[0].clientY - r.top;
+    if (lineMode){ toggleLevelAt(py); return; }
+    const now = Date.now();
+    if (now - lastTap < 300){          // double tap resets the zoom
+      view.count = Math.min(160, Math.max(30, bars.length));
+      view.right = 0; follow = true; clampView(); render(); savePrefs();
+      lastTap = 0; drag = null; return;
+    }
+    lastTap = now;
+    drag = {x:e.touches[0].clientX, right:view.right, t:now, vx:0};
+    cross = barAt(px); crossY = py;
     statsForCursor(); render();
   }
 }, {passive:true});
+
 $('wrap').addEventListener('touchmove', e => {
   const r = cv.getBoundingClientRect();
   if (pinch && e.touches.length === 2){
@@ -419,28 +530,40 @@ $('wrap').addEventListener('touchmove', e => {
                          e.touches[0].clientY-e.touches[1].clientY);
     if (d > 0){ view.count = pinch.c * (pinch.d/d); clampView(); render(); }
   } else if (drag && e.touches.length === 1){
-    const dx = e.touches[0].clientX - drag.x;
-    drag.moved += Math.abs(dx);
+    const cxp = e.touches[0].clientX;
+    const dx = cxp - drag.x;
+    const now = Date.now(), dt = Math.max(1, now - drag.t);
+    drag.vx = (cxp - (drag.lastX == null ? cxp : drag.lastX)) / dt * 16;
+    drag.lastX = cxp; drag.t = now;
     const bw = (W-PAD_R)/view.count;
-    // RTL page, LTR chart: dragging right walks back through history.
+    // Right-to-left page, left-to-right chart: dragging right walks back.
     view.right = drag.right + dx/bw;
     clampView();
-    cross = barAt(e.touches[0].clientX - r.left);
+    cross = barAt(cxp - r.left); crossY = e.touches[0].clientY - r.top;
     statsForCursor(); render();
   }
   e.preventDefault();
 }, {passive:false});
-$('wrap').addEventListener('touchend', () => { pinch = null; drag = null; }, {passive:true});
+
+$('wrap').addEventListener('touchend', () => {
+  if (drag && Math.abs(drag.vx) > 0.5){ vel = drag.vx; startGlide(); }
+  pinch = null; drag = null; savePrefs();
+}, {passive:true});
 
 cv.addEventListener('mousemove', e => {
   const r = cv.getBoundingClientRect();
-  cross = barAt(e.clientX - r.left);
+  cross = barAt(e.clientX - r.left); crossY = e.clientY - r.top;
   statsForCursor(); render();
 });
-cv.addEventListener('mouseleave', () => { cross = null; statsForCursor(); render(); });
+cv.addEventListener('mouseleave', () => { cross = null; crossY = null; statsForCursor(); render(); });
+cv.addEventListener('click', e => {
+  if (!lineMode) return;
+  const r = cv.getBoundingClientRect();
+  toggleLevelAt(e.clientY - r.top);
+});
 $('wrap').addEventListener('wheel', e => {
   view.count *= e.deltaY > 0 ? 1.12 : 0.89;
-  clampView(); render(); e.preventDefault();
+  clampView(); render(); savePrefs(); e.preventDefault();
 }, {passive:false});
 
 // ─── Folding ────────────────────────────────────────────────────────────────
@@ -598,7 +721,7 @@ async function reload(){
   state('بارگذاری…');
   if (await loadHistory()){
     view.right = 0; follow = true; cross = null;
-    view.count = Math.min(160, Math.max(30, bars.length));
+    view.count = Math.min(Math.max(6, view.count || 120), Math.max(6, bars.length));
     flow = new Map();
     lvlTick = niceStep((bars[bars.length-1]?.close || 1) * 0.00004);
     resize();
@@ -611,6 +734,13 @@ async function reload(){
 }
 
 // ─── UI ─────────────────────────────────────────────────────────────────────
+loadPrefs();
+loadLevels();
+$('sym').value = symbol;
+$('hotBtn').className = highlight ? 'on' : '';
+$('dBtn').className   = deltaOn   ? 'on' : '';
+$('fpBtn').className  = fpOn      ? 'on' : '';
+
 TFS.forEach(t => {
   const b = document.createElement('button');
   b.textContent = t.label;
@@ -620,17 +750,25 @@ TFS.forEach(t => {
     [...$('tfs').children].forEach(c => c.className='');
     b.className = 'on';
     $('tfNote').textContent = t.fold > 1 ? 'ساخته‌شده از کندل ۱ ثانیه‌ای' : '';
+    savePrefs();
     reload();
   };
   $('tfs').appendChild(b);
 });
-$('sym').onchange = e => { symbol = e.target.value; reload(); };
+$('tfNote').textContent = tf.fold > 1 ? 'ساخته‌شده از کندل ۱ ثانیه‌ای' : '';
+
+$('sym').onchange = e => { symbol = e.target.value; loadLevels(); savePrefs(); reload(); };
 $('hotBtn').onclick = () => { highlight = !highlight;
-  $('hotBtn').className = highlight ? 'on' : ''; render(); };
-$('dBtn').onclick = () => { deltaOn = !deltaOn; $('dBtn').className = deltaOn ? 'on' : ''; render(); };
-$('fpBtn').onclick = () => { fpOn = !fpOn; $('fpBtn').className = fpOn ? 'on' : ''; render(); };
-$('homeBtn').onclick = () => { view.right = 0; follow = true; cross = null;
-  statsForCursor(); render(); };
+  $('hotBtn').className = highlight ? 'on' : ''; savePrefs(); render(); };
+$('dBtn').onclick = () => { deltaOn = !deltaOn;
+  $('dBtn').className = deltaOn ? 'on' : ''; savePrefs(); render(); };
+$('fpBtn').onclick = () => { fpOn = !fpOn;
+  $('fpBtn').className = fpOn ? 'on' : ''; savePrefs(); render(); };
+$('lineBtn').onclick = () => { lineMode = !lineMode;
+  $('lineBtn').className = lineMode ? 'on' : '';
+  $('lineBtn').textContent = lineMode ? 'خط ✓' : 'خط'; };
+$('homeBtn').onclick = () => { stopGlide(); view.right = 0; follow = true;
+  cross = null; crossY = null; statsForCursor(); render(); savePrefs(); };
 
 // A 1s socket on a phone in a pocket is wasted battery and data.
 document.addEventListener('visibilitychange', () => {
