@@ -2,29 +2,28 @@
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>چارت حجم — زیر یک دقیقه</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0e1116; --panel:#161b22; --line:#222b36; --text:#e6edf3; --dim:#8b949e;
+    --bg:#0e1116; --panel:#161b22; --line:#222b36; --grid:#1a212b;
+    --text:#e6edf3; --dim:#8b949e;
     --up:#0bb07b; --down:#e5484d; --hot:#ff9f0a; --accent:#3b82f6;
   }
-  *{box-sizing:border-box}
-  html,body{height:100%}
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{height:100%; overscroll-behavior:none}
   body{
     margin:0; background:var(--bg); color:var(--text);
-    font-family:Vazirmatn,system-ui,-apple-system,"Segoe UI",sans-serif;
+    font-family:Vazirmatn,system-ui,-apple-system,sans-serif;
     display:flex; flex-direction:column; overflow:hidden;
     padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom);
   }
-
   header{
     display:flex; flex-wrap:wrap; gap:6px; align-items:center;
-    padding:8px 10px; background:var(--panel); border-bottom:1px solid var(--line);
-    flex:0 0 auto;
+    padding:8px 10px; background:var(--panel); border-bottom:1px solid var(--line); flex:0 0 auto;
   }
   select,button{
     font-family:inherit; font-size:13px; color:var(--text);
@@ -35,20 +34,18 @@
   button.on{background:var(--accent); border-color:var(--accent); color:#fff}
   .tfs{display:flex; gap:4px; overflow-x:auto; -webkit-overflow-scrolling:touch; flex:1 1 100%}
   .tfs button{padding:6px 11px; white-space:nowrap}
-
   .stats{
     display:flex; gap:14px; flex-wrap:wrap; align-items:baseline;
     padding:7px 12px; background:var(--panel); border-bottom:1px solid var(--line);
-    font-variant-numeric:tabular-nums; flex:0 0 auto;
+    font-variant-numeric:tabular-nums; flex:0 0 auto; min-height:34px;
   }
   .stat{display:flex; gap:5px; align-items:baseline; font-size:12px}
   .stat b{font-size:14px; font-weight:600}
   .k{color:var(--dim)}
   #price b{font-size:17px}
   .up{color:var(--up)} .down{color:var(--down)} .hot{color:var(--hot)}
-
-  #chart{flex:1 1 auto; min-height:0; position:relative}
-
+  #wrap{flex:1 1 auto; min-height:0; position:relative; touch-action:none}
+  canvas{display:block; width:100%; height:100%}
   #msg{
     position:absolute; inset:0; display:none; align-items:center; justify-content:center;
     text-align:center; padding:24px; background:rgba(14,17,22,.94); z-index:5;
@@ -56,11 +53,10 @@
   #msg div{max-width:340px; line-height:1.9; font-size:13px}
   #msg b{display:block; margin-bottom:8px; font-size:15px}
   #msg .dim{color:var(--dim)}
-
   footer{
-    padding:5px 12px; font-size:11px; color:var(--dim);
-    background:var(--panel); border-top:1px solid var(--line); flex:0 0 auto;
-    display:flex; justify-content:space-between; gap:10px;
+    padding:5px 12px; font-size:11px; color:var(--dim); background:var(--panel);
+    border-top:1px solid var(--line); flex:0 0 auto; display:flex;
+    justify-content:space-between; gap:10px;
   }
   .dot{display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--dim); margin-left:5px}
   .dot.live{background:var(--up)} .dot.bad{background:var(--down)}
@@ -77,6 +73,7 @@
     <option value="XRPUSDT">ریپل — XRPUSDT</option>
   </select>
   <button id="hotBtn" class="on">هایلایت حجم</button>
+  <button id="homeBtn">آخرین</button>
   <div class="tfs" id="tfs"></div>
 </header>
 
@@ -84,149 +81,260 @@
   <div class="stat" id="price"><span class="k">قیمت</span><b>—</b></div>
   <div class="stat"><span class="k">تغییر</span><b id="chg">—</b></div>
   <div class="stat"><span class="k">RVOL</span><b id="rvol">—</b></div>
-  <div class="stat"><span class="k">حجم کندل</span><b id="cvol">—</b></div>
+  <div class="stat"><span class="k">حجم</span><b id="cvol">—</b></div>
 </div>
 
-<div id="chart">
+<div id="wrap">
+  <canvas id="cv"></canvas>
   <div id="msg"><div></div></div>
 </div>
 
 <footer>
-  <span>دیتا: بایننس — حجم واقعی <span id="dot" class="dot"></span><span id="state">در حال اتصال…</span></span>
+  <span>بایننس — حجم واقعی <span id="dot" class="dot"></span><span id="state">…</span></span>
   <span id="tfNote"></span>
 </footer>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js"></script>
 <script>
-// Binance publishes 1-second klines but nothing between that and a minute, so
-// 5s / 15s / 30s are folded here from the 1s stream. The result is identical to
-// a native candle of that length; only the arithmetic happens in the browser.
+'use strict';
+// Everything is drawn here rather than pulled from a charting library. One less
+// external host to reach is worth the extra code on a restricted connection:
+// the only thing this page needs from the network now is Binance itself.
+
+// Binance publishes 1-second klines and nothing between that and a minute, so
+// 5s / 15s / 30s are folded from the 1s stream in the browser.
 const TFS = [
-  {id:'1s',  label:'۱ ثانیه',   base:'1s', fold:1},
-  {id:'5s',  label:'۵ ثانیه',   base:'1s', fold:5},
-  {id:'15s', label:'۱۵ ثانیه',  base:'1s', fold:15},
-  {id:'30s', label:'۳۰ ثانیه',  base:'1s', fold:30},
-  {id:'1m',  label:'۱ دقیقه',   base:'1m', fold:1},
-  {id:'5m',  label:'۵ دقیقه',   base:'5m', fold:1},
-  {id:'15m', label:'۱۵ دقیقه',  base:'15m', fold:1},
+  {id:'1s',  label:'۱ ثانیه',  base:'1s',  fold:1},
+  {id:'5s',  label:'۵ ثانیه',  base:'1s',  fold:5},
+  {id:'15s', label:'۱۵ ثانیه', base:'1s',  fold:15},
+  {id:'30s', label:'۳۰ ثانیه', base:'1s',  fold:30},
+  {id:'1m',  label:'۱ دقیقه',  base:'1m',  fold:1},
+  {id:'5m',  label:'۵ دقیقه',  base:'5m',  fold:1},
+  {id:'15m', label:'۱۵ دقیقه', base:'15m', fold:1},
 ];
+const HOSTS = ['https://data-api.binance.vision','https://api.binance.com',
+               'https://api1.binance.com','https://api2.binance.com'];
+const WS_HOSTS = ['wss://data-stream.binance.vision:9443/ws','wss://stream.binance.com:9443/ws'];
 
-// Binance serves market data from several hosts; if one is unreachable the next
-// is tried, which also covers the case of a blocked regional endpoint.
-const HOSTS = [
-  'https://data-api.binance.vision',
-  'https://api.binance.com',
-  'https://api1.binance.com',
-  'https://api2.binance.com',
-];
-const WS_HOSTS = [
-  'wss://data-stream.binance.vision:9443/ws',
-  'wss://stream.binance.com:9443/ws',
-];
-
-const RVOL_LOOKBACK = 50;   // bars forming "normal" volume
-const HOT_MULT      = 2.0;  // a bar is hot at this multiple of normal
+const RVOL_LOOKBACK = 50, HOT_MULT = 2.0;
+const PAD_R = 58, PAD_B = 20, PAD_T = 8, VOL_FRAC = 0.26;
 
 let tf = TFS[0], symbol = 'BTCUSDT', highlight = true;
-let chart, candles, volume, ws = null, bars = [], hostIdx = 0, wsIdx = 0, reconnect = null;
+let bars = [], ws = null, hostIdx = 0, wsIdx = 0, reconnect = null;
+let view = {count:120, right:0};      // right = bars hidden past the right edge
+let cross = null, follow = true;
 
 const $ = id => document.getElementById(id);
-const fmt = (n, d = 2) => n == null || !isFinite(n) ? '—' :
-  n.toLocaleString('en-US', {minimumFractionDigits:d, maximumFractionDigits:d});
-const shortVol = v => v >= 1e6 ? (v/1e6).toFixed(2)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'K' : fmt(v,2);
+const cv = $('cv'), ctx = cv.getContext('2d');
+let W = 0, H = 0, dpr = 1;
 
-function say(title, body){
-  const m = $('msg');
-  m.style.display = 'flex';
-  m.firstElementChild.innerHTML = '<b>'+title+'</b><span class="dim">'+body+'</span>';
+const fmt = (n,d=2) => n==null||!isFinite(n) ? '—'
+  : n.toLocaleString('en-US',{minimumFractionDigits:d, maximumFractionDigits:d});
+const shortVol = v => v>=1e6 ? (v/1e6).toFixed(2)+'M' : v>=1e3 ? (v/1e3).toFixed(1)+'K' : fmt(v,2);
+const digits = () => { const p = bars.length ? bars[bars.length-1].close : 0;
+  return p>=1000 ? 2 : p>=1 ? 3 : 6; };
+
+function say(t,b){ const m=$('msg'); m.style.display='flex';
+  m.firstElementChild.innerHTML = '<b>'+t+'</b><span class="dim">'+b+'</span>'; }
+function hideMsg(){ $('msg').style.display='none'; }
+function state(t,c){ $('state').textContent=t; $('dot').className='dot'+(c?' '+c:''); }
+
+// ─── Canvas sizing ──────────────────────────────────────────────────────────
+function resize(){
+  const r = $('wrap').getBoundingClientRect();
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = r.width; H = r.height;
+  cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  render();
 }
-function hideMsg(){ $('msg').style.display = 'none'; }
-function state(txt, cls){
-  $('state').textContent = txt;
-  $('dot').className = 'dot' + (cls ? ' '+cls : '');
-}
-
-// ─── Chart ──────────────────────────────────────────────────────────────────
-function buildChart(){
-  if (typeof LightweightCharts === 'undefined'){
-    say('کتابخانه‌ی چارت لود نشد',
-        'اینترنتت رو چک کن و صفحه را دوباره باز کن. اگر فیلترشکن داری، روشنش کن.');
-    return false;
-  }
-  chart = LightweightCharts.createChart($('chart'), {
-    layout:{background:{color:'#0e1116'}, textColor:'#8b949e', fontFamily:'Vazirmatn, sans-serif'},
-    grid:{vertLines:{color:'#1a212b'}, horzLines:{color:'#1a212b'}},
-    rightPriceScale:{borderColor:'#222b36', scaleMargins:{top:0.08, bottom:0.28}},
-    timeScale:{borderColor:'#222b36', timeVisible:true, secondsVisible:true, rightOffset:4},
-    crosshair:{mode:LightweightCharts.CrosshairMode ? LightweightCharts.CrosshairMode.Normal : 0},
-    handleScale:{axisPressedMouseMove:true},
-    localization:{locale:'en-US'},
-  });
-
-  // v4 and v5 expose different constructors; support whichever is loaded.
-  const mkCandle = o => chart.addCandlestickSeries ? chart.addCandlestickSeries(o)
-                      : chart.addSeries(LightweightCharts.CandlestickSeries, o);
-  const mkHist   = o => chart.addHistogramSeries ? chart.addHistogramSeries(o)
-                      : chart.addSeries(LightweightCharts.HistogramSeries, o);
-
-  candles = mkCandle({
-    upColor:'#0bb07b', downColor:'#e5484d',
-    borderUpColor:'#0bb07b', borderDownColor:'#e5484d',
-    wickUpColor:'#0bb07b', wickDownColor:'#e5484d',
-  });
-  volume = mkHist({priceFormat:{type:'volume'}, priceScaleId:'vol'});
-  chart.priceScale('vol').applyOptions({scaleMargins:{top:0.78, bottom:0}, visible:false});
-
-  new ResizeObserver(() => chart.applyOptions({
-    width:$('chart').clientWidth, height:$('chart').clientHeight
-  })).observe($('chart'));
-
-  chart.subscribeCrosshairMove(p => {
-    if (!p || !p.time){ showStats(bars[bars.length-1]); return; }
-    const b = bars.find(x => x.time === p.time);
-    if (b) showStats(b);
-  });
-  return true;
-}
+new ResizeObserver(resize).observe($('wrap'));
 
 // ─── Volume readings ────────────────────────────────────────────────────────
-// "Normal" is the mean of the preceding bars, so RVOL says how this bar compares
-// with the recent past rather than with an absolute number that means nothing
-// across symbols.
 function normalVolume(i){
-  const from = Math.max(0, i - RVOL_LOOKBACK), slice = bars.slice(from, i);
-  if (!slice.length) return null;
-  return slice.reduce((s,b) => s + b.volume, 0) / slice.length;
+  const from = Math.max(0, i-RVOL_LOOKBACK), n = i-from;
+  if (n <= 0) return null;
+  let s = 0; for (let k=from;k<i;k++) s += bars[k].volume;
+  return s/n;
 }
-function paint(){
-  candles.setData(bars.map(b => ({time:b.time, open:b.open, high:b.high, low:b.low, close:b.close})));
-  volume.setData(bars.map((b,i) => {
-    const nv = normalVolume(i);
-    const hot = highlight && nv && b.volume >= nv * HOT_MULT;
-    return {time:b.time, value:b.volume,
-            color: hot ? '#ff9f0a' : (b.close >= b.open ? 'rgba(11,176,123,.45)' : 'rgba(229,72,77,.45)')};
-  }));
-}
-function showStats(b){
-  if (!b) return;
-  const i = bars.indexOf(b), nv = normalVolume(i < 0 ? bars.length-1 : i);
-  const rv = nv ? b.volume / nv : null;
-  const up = b.close >= b.open;
-  $('price').innerHTML = '<span class="k">قیمت</span><b class="'+(up?'up':'down')+'">'+fmt(b.close, priceDigits())+'</b>';
-  const pct = (b.close - b.open) / b.open * 100;
-  $('chg').textContent = (pct>=0?'+':'') + pct.toFixed(3) + '٪';
-  $('chg').className = pct >= 0 ? 'up' : 'down';
-  $('rvol').textContent = rv ? rv.toFixed(2)+'x' : '—';
-  $('rvol').className = rv && rv >= HOT_MULT ? 'hot' : '';
-  $('cvol').textContent = shortVol(b.volume);
-}
-function priceDigits(){
-  const p = bars.length ? bars[bars.length-1].close : 0;
-  return p >= 1000 ? 2 : p >= 1 ? 3 : 6;
+function isHot(i){
+  const nv = normalVolume(i);
+  return highlight && nv && bars[i].volume >= nv*HOT_MULT;
 }
 
-// ─── Folding 1s bars into 5s / 15s / 30s ────────────────────────────────────
-function bucket(t){ return Math.floor(t / tf.fold) * tf.fold; }
+// ─── Drawing ────────────────────────────────────────────────────────────────
+function visible(){
+  const end = Math.max(1, bars.length - view.right);
+  const start = Math.max(0, end - view.count);
+  return {start, end};
+}
+function render(){
+  ctx.clearRect(0,0,W,H);
+  if (!bars.length || W<40 || H<60) return;
+
+  const {start,end} = visible();
+  const n = end-start;
+  if (n <= 0) return;
+
+  const plotW = W - PAD_R, plotH = H - PAD_B;
+  const volH = plotH * VOL_FRAC, priceH = plotH - volH - PAD_T;
+  const bw = plotW / view.count;
+
+  let lo = Infinity, hi = -Infinity, mv = 0;
+  for (let i=start;i<end;i++){
+    const b = bars[i];
+    if (b.low  < lo) lo = b.low;
+    if (b.high > hi) hi = b.high;
+    if (b.volume > mv) mv = b.volume;
+  }
+  if (!isFinite(lo) || hi === lo){ hi = lo + 1; lo -= 1; }
+  const pad = (hi-lo)*0.06; hi += pad; lo -= pad;
+
+  // The page is RTL but a price chart is not: newest stays on the right.
+  const x = i => plotW - (end - i) * bw + bw/2;
+  const y = p => PAD_T + (hi-p)/(hi-lo) * priceH;
+  const vy = v => plotH - (mv ? v/mv : 0) * volH;
+
+  // grid + price axis
+  ctx.font = '10px Vazirmatn, sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--grid').trim() || '#1a212b';
+  ctx.fillStyle = '#8b949e';
+  ctx.lineWidth = 1;
+  const steps = Math.max(2, Math.min(6, Math.floor(priceH/46)));
+  for (let k=0;k<=steps;k++){
+    const p = lo + (hi-lo)*k/steps, py = Math.round(y(p))+0.5;
+    ctx.beginPath(); ctx.moveTo(0,py); ctx.lineTo(plotW,py); ctx.stroke();
+    ctx.textAlign = 'left';
+    ctx.fillText(fmt(p, digits()), plotW+6, py);
+  }
+
+  // candles
+  const body = Math.max(1, Math.min(bw*0.72, bw-1));
+  for (let i=start;i<end;i++){
+    const b = bars[i], cx = x(i), up = b.close >= b.open;
+    ctx.strokeStyle = ctx.fillStyle = up ? '#0bb07b' : '#e5484d';
+    ctx.beginPath();
+    ctx.moveTo(Math.round(cx)+0.5, y(b.high));
+    ctx.lineTo(Math.round(cx)+0.5, y(b.low));
+    ctx.stroke();
+    const yo = y(b.open), yc = y(b.close);
+    const top = Math.min(yo,yc), h = Math.max(1, Math.abs(yc-yo));
+    ctx.fillRect(cx-body/2, top, body, h);
+  }
+
+  // volume
+  for (let i=start;i<end;i++){
+    const b = bars[i], cx = x(i);
+    ctx.fillStyle = isHot(i) ? '#ff9f0a'
+      : (b.close >= b.open ? 'rgba(11,176,123,.45)' : 'rgba(229,72,77,.45)');
+    const vt = vy(b.volume);
+    ctx.fillRect(cx-body/2, vt, body, plotH-vt);
+  }
+
+  // last price marker
+  const last = bars[end-1], ly = y(last.close);
+  if (ly > 0 && ly < plotH){
+    ctx.setLineDash([3,3]);
+    ctx.strokeStyle = '#3b82f6';
+    ctx.beginPath(); ctx.moveTo(0, Math.round(ly)+0.5); ctx.lineTo(plotW, Math.round(ly)+0.5); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillRect(plotW, ly-8, PAD_R, 16);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'left';
+    ctx.fillText(fmt(last.close, digits()), plotW+5, ly);
+  }
+
+  // time axis
+  ctx.fillStyle = '#8b949e'; ctx.textAlign = 'center';
+  const every = Math.max(1, Math.round(n/5));
+  for (let i=start;i<end;i+=every){
+    const d = new Date(bars[i].time*1000);
+    const lbl = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')
+              + (tf.fold<60 && tf.base==='1s' ? ':'+String(d.getSeconds()).padStart(2,'0') : '');
+    ctx.fillText(lbl, x(i), plotH+10);
+  }
+
+  // crosshair
+  if (cross != null && cross >= start && cross < end){
+    const cx = x(cross);
+    ctx.strokeStyle = 'rgba(139,148,158,.55)';
+    ctx.setLineDash([2,3]);
+    ctx.beginPath(); ctx.moveTo(Math.round(cx)+0.5, 0); ctx.lineTo(Math.round(cx)+0.5, plotH); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+// ─── Stats readout ──────────────────────────────────────────────────────────
+function showStats(i){
+  const b = bars[i]; if (!b) return;
+  const nv = normalVolume(i), rv = nv ? b.volume/nv : null, up = b.close >= b.open;
+  $('price').innerHTML = '<span class="k">قیمت</span><b class="'+(up?'up':'down')+'">'+fmt(b.close,digits())+'</b>';
+  const pct = (b.close-b.open)/b.open*100;
+  $('chg').textContent = (pct>=0?'+':'')+pct.toFixed(3)+'٪';
+  $('chg').className = pct>=0 ? 'up' : 'down';
+  $('rvol').textContent = rv ? rv.toFixed(2)+'x' : '—';
+  $('rvol').className = rv && rv>=HOT_MULT ? 'hot' : '';
+  $('cvol').textContent = shortVol(b.volume);
+}
+function statsForCursor(){ showStats(cross != null ? cross : bars.length-1); }
+
+// ─── Touch and mouse ────────────────────────────────────────────────────────
+let drag = null, pinch = null;
+function barAt(px){
+  const {start,end} = visible(), plotW = W - PAD_R, bw = plotW/view.count;
+  const i = end - Math.ceil((plotW - px)/bw);
+  return Math.max(start, Math.min(end-1, i));
+}
+function clampView(){
+  view.count = Math.max(20, Math.min(600, Math.round(view.count)));
+  view.right = Math.max(0, Math.min(Math.max(0, bars.length-10), Math.round(view.right)));
+  follow = view.right === 0;
+}
+$('wrap').addEventListener('touchstart', e => {
+  if (e.touches.length === 2){
+    pinch = {d:Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                          e.touches[0].clientY-e.touches[1].clientY), c:view.count};
+    drag = null;
+  } else {
+    const r = cv.getBoundingClientRect();
+    drag = {x:e.touches[0].clientX, right:view.right, moved:0};
+    cross = barAt(e.touches[0].clientX - r.left);
+    statsForCursor(); render();
+  }
+}, {passive:true});
+$('wrap').addEventListener('touchmove', e => {
+  const r = cv.getBoundingClientRect();
+  if (pinch && e.touches.length === 2){
+    const d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                         e.touches[0].clientY-e.touches[1].clientY);
+    if (d > 0){ view.count = pinch.c * (pinch.d/d); clampView(); render(); }
+  } else if (drag && e.touches.length === 1){
+    const dx = e.touches[0].clientX - drag.x;
+    drag.moved += Math.abs(dx);
+    const bw = (W-PAD_R)/view.count;
+    // RTL page, LTR chart: dragging right walks back through history.
+    view.right = drag.right + dx/bw;
+    clampView();
+    cross = barAt(e.touches[0].clientX - r.left);
+    statsForCursor(); render();
+  }
+  e.preventDefault();
+}, {passive:false});
+$('wrap').addEventListener('touchend', () => { pinch = null; drag = null; }, {passive:true});
+
+cv.addEventListener('mousemove', e => {
+  const r = cv.getBoundingClientRect();
+  cross = barAt(e.clientX - r.left);
+  statsForCursor(); render();
+});
+cv.addEventListener('mouseleave', () => { cross = null; statsForCursor(); render(); });
+$('wrap').addEventListener('wheel', e => {
+  view.count *= e.deltaY > 0 ? 1.12 : 0.89;
+  clampView(); render(); e.preventDefault();
+}, {passive:false});
+
+// ─── Folding ────────────────────────────────────────────────────────────────
+const bucket = t => Math.floor(t/tf.fold)*tf.fold;
 function fold(raw){
   if (tf.fold === 1) return raw;
   const out = [];
@@ -234,12 +342,9 @@ function fold(raw){
     const t = bucket(r.time), last = out[out.length-1];
     if (last && last.time === t){
       last.high = Math.max(last.high, r.high);
-      last.low  = Math.min(last.low, r.low);
-      last.close = r.close;
-      last.volume += r.volume;
-    } else {
-      out.push({time:t, open:r.open, high:r.high, low:r.low, close:r.close, volume:r.volume});
-    }
+      last.low  = Math.min(last.low,  r.low);
+      last.close = r.close; last.volume += r.volume;
+    } else out.push({time:t, open:r.open, high:r.high, low:r.low, close:r.close, volume:r.volume});
   }
   return out;
 }
@@ -247,133 +352,111 @@ function fold(raw){
 // ─── Data ───────────────────────────────────────────────────────────────────
 async function loadHistory(){
   const limit = tf.fold > 1 ? 1000 : 500;
-  let lastErr;
-  for (let n = 0; n < HOSTS.length; n++){
-    const host = HOSTS[(hostIdx + n) % HOSTS.length];
+  let err;
+  for (let k=0;k<HOSTS.length;k++){
+    const host = HOSTS[(hostIdx+k)%HOSTS.length];
     try{
-      const url = host + '/api/v3/klines?symbol=' + symbol + '&interval=' + tf.base + '&limit=' + limit;
-      const res = await fetch(url, {cache:'no-store'});
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const raw = (await res.json()).map(k => ({
-        time: Math.floor(k[0]/1000),
-        open:+k[1], high:+k[2], low:+k[3], close:+k[4], volume:+k[5],
+      const res = await fetch(host+'/api/v3/klines?symbol='+symbol+'&interval='+tf.base+'&limit='+limit,
+                              {cache:'no-store'});
+      if (!res.ok) throw new Error('HTTP '+res.status);
+      const raw = (await res.json()).map(a => ({
+        time:Math.floor(a[0]/1000), open:+a[1], high:+a[2], low:+a[3], close:+a[4], volume:+a[5]
       }));
-      hostIdx = (hostIdx + n) % HOSTS.length;
+      hostIdx = (hostIdx+k)%HOSTS.length;
       bars = fold(raw);
-      // The newest folded bucket is incomplete and the stream cannot tell which
-      // of its 1s candles are already counted, so it would rebuild the volume
-      // from scratch and read low. Drop it; the stream forms it properly.
+      // The newest folded bucket is partial and the stream cannot tell which of
+      // its 1s candles history already counted, so it would rebuild the volume
+      // far too low. Drop it and let the stream form it cleanly.
       if (tf.fold > 1) bars.pop();
       hideMsg();
       return true;
-    } catch(e){ lastErr = e; }
+    } catch(e){ err = e; }
   }
   say('دیتا لود نشد',
-      'هیچ‌کدام از سرورهای بایننس جواب ندادند. اگر از ایران وصل می‌شوی، احتمالاً باید '+
-      'فیلترشکن را روشن کنی.<br><br>خطا: ' + (lastErr ? lastErr.message : 'نامشخص'));
-  state('قطع', 'bad');
+      'هیچ‌کدام از سرورهای بایننس جواب ندادند. اگر از ایران وصل می‌شوی، فیلترشکن را روشن کن.'+
+      '<br><br>' + (err ? err.message : ''));
+  state('قطع','bad');
   return false;
 }
-
 function connect(){
-  if (ws){ try{ ws.onclose = null; ws.close(); }catch(e){} ws = null; }
+  if (ws){ try{ ws.onclose=null; ws.close(); }catch(e){} ws=null; }
   clearTimeout(reconnect);
-  const host = WS_HOSTS[wsIdx % WS_HOSTS.length];
-  const url = host + '/' + symbol.toLowerCase() + '@kline_' + tf.base;
   state('در حال اتصال…');
-  try{ ws = new WebSocket(url); } catch(e){ retry(); return; }
-
-  ws.onopen = () => state('زنده', 'live');
-  ws.onerror = () => state('خطای اتصال', 'bad');
-  ws.onclose = () => { state('قطع شد — تلاش دوباره…', 'bad'); retry(); };
+  try{ ws = new WebSocket(WS_HOSTS[wsIdx%WS_HOSTS.length]+'/'+symbol.toLowerCase()+'@kline_'+tf.base); }
+  catch(e){ retry(); return; }
+  ws.onopen  = () => state('زنده','live');
+  ws.onerror = () => state('خطای اتصال','bad');
+  ws.onclose = () => { state('قطع — تلاش دوباره','bad'); retry(); };
   ws.onmessage = ev => {
-    let k;
-    try{ k = JSON.parse(ev.data).k; } catch(e){ return; }
+    let k; try{ k = JSON.parse(ev.data).k; }catch(e){ return; }
     if (!k) return;
     const r = {time:Math.floor(k.t/1000), open:+k.o, high:+k.h, low:+k.l, close:+k.c, volume:+k.v};
     const t = bucket(r.time), last = bars[bars.length-1];
 
-    if (last && last.time === t && (tf.fold === 1 || last._open1s)){
+    if (last && last.time === t && (tf.fold === 1 || last._s)){
       if (tf.fold === 1){
-          // Binance reports the open candle's volume cumulatively, so it replaces
-        // rather than adds.
+        // Binance reports an open candle's volume cumulatively: replace, not add.
         last.high = r.high; last.low = r.low; last.close = r.close; last.volume = r.volume;
       } else {
-        // Inside a folded bucket only the still-open 1s candle changes, so its
-        // volume is tracked separately instead of being added again each tick.
         last.high = Math.max(last.high, r.high);
-        last.low  = Math.min(last.low, r.low);
+        last.low  = Math.min(last.low,  r.low);
         last.close = r.close;
-        last._open1s[r.time] = r.volume;
-        last.volume = Object.values(last._open1s).reduce((a,b) => a + b, 0);
+        last._s[r.time] = r.volume;
+        let s = 0; for (const v of Object.values(last._s)) s += v;
+        last.volume = s;
       }
     } else {
-      if (last) delete last._open1s;
-      bars.push({time:t, open:r.open, high:r.high, low:r.low, close:r.close, volume:r.volume,
-                 _open1s:{[r.time]:r.volume}});
-      if (bars.length > 1500) bars.shift();
+      if (last) delete last._s;
+      bars.push({time:t, open:r.open, high:r.high, low:r.low, close:r.close,
+                 volume:r.volume, _s:{[r.time]:r.volume}});
+      if (bars.length > 2000) bars.shift();
+      if (!follow) view.right++;        // keep the viewport still while panned back
     }
-
-    const i = bars.length - 1, b = bars[i], nv = normalVolume(i);
-    const hot = highlight && nv && b.volume >= nv * HOT_MULT;
-    candles.update({time:b.time, open:b.open, high:b.high, low:b.low, close:b.close});
-    volume.update({time:b.time, value:b.volume,
-      color: hot ? '#ff9f0a' : (b.close >= b.open ? 'rgba(11,176,123,.45)' : 'rgba(229,72,77,.45)')});
-    showStats(b);
+    if (follow) view.right = 0;
+    statsForCursor();
+    render();
   };
 }
-function retry(){
-  wsIdx++;
-  clearTimeout(reconnect);
-  reconnect = setTimeout(connect, 2500);
-}
+function retry(){ wsIdx++; clearTimeout(reconnect); reconnect = setTimeout(connect, 2500); }
 
 async function reload(){
-  state('در حال بارگذاری…');
+  state('بارگذاری…');
   if (await loadHistory()){
-    paint();
-    chart.timeScale().fitContent();
-    showStats(bars[bars.length-1]);
+    view.right = 0; follow = true; cross = null;
+    resize();
+    showStats(bars.length-1);
     connect();
   }
 }
 
 // ─── UI ─────────────────────────────────────────────────────────────────────
-function buildTfs(){
-  const wrap = $('tfs');
-  TFS.forEach(t => {
-    const b = document.createElement('button');
-    b.textContent = t.label;
-    b.className = t.id === tf.id ? 'on' : '';
-    b.onclick = () => {
-      tf = t;
-      [...wrap.children].forEach(c => c.className = '');
-      b.className = 'on';
-      $('tfNote').textContent = t.fold > 1 ? 'ساخته‌شده از کندل ۱ ثانیه‌ای' : '';
-      reload();
-    };
-    wrap.appendChild(b);
-  });
-}
-
+TFS.forEach(t => {
+  const b = document.createElement('button');
+  b.textContent = t.label;
+  if (t.id === tf.id) b.className = 'on';
+  b.onclick = () => {
+    tf = t;
+    [...$('tfs').children].forEach(c => c.className='');
+    b.className = 'on';
+    $('tfNote').textContent = t.fold > 1 ? 'ساخته‌شده از کندل ۱ ثانیه‌ای' : '';
+    reload();
+  };
+  $('tfs').appendChild(b);
+});
 $('sym').onchange = e => { symbol = e.target.value; reload(); };
-$('hotBtn').onclick = () => {
-  highlight = !highlight;
-  $('hotBtn').className = highlight ? 'on' : '';
-  paint();
-};
+$('hotBtn').onclick = () => { highlight = !highlight;
+  $('hotBtn').className = highlight ? 'on' : ''; render(); };
+$('homeBtn').onclick = () => { view.right = 0; follow = true; cross = null;
+  statsForCursor(); render(); };
 
-// The 1s stream is heavy; pause it while the tab is hidden so a phone left in a
-// pocket is not holding an open socket and burning battery.
+// A 1s socket on a phone in a pocket is wasted battery and data.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden){ if (ws){ try{ ws.onclose = null; ws.close(); }catch(e){} ws = null; } state('متوقف'); }
+  if (document.hidden){ if (ws){ try{ ws.onclose=null; ws.close(); }catch(e){} ws=null; } state('متوقف'); }
   else reload();
 });
 
-if (buildChart()){
-  buildTfs();
-  reload();
-}
+resize();
+reload();
 </script>
 </body>
 </html>
