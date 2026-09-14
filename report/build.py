@@ -209,9 +209,15 @@ def run_symbol(fa, source, sym, en, day):
         week_start = day_start - 7 * 86400 * 1000
         price = ks[-1]["c"]
         alive = week_levels(per_tf, week_start)
-        rows.append(("7d", {k: any(a[0] == k for a in alive) for k in KINDS}))
         drawn = sorted([a for a in alive if a[1] in WEEK_DRAW],
                        key=lambda a: abs((a[2] + a[3]) / 2 - price))[:16]
+        # The row is read off what is DRAWN, never off the wider list it was
+        # chosen from. The week's chart carries hourly and four-hourly levels
+        # only, so a tick taken from the full list promised a propulsion block
+        # that was found on the five-minute chart and deliberately not drawn --
+        # he looked for it and it was not there. Whatever the picture shows is
+        # what the checklist may claim, including anything the cap trims.
+        rows.append(("7d", {k: any(a[0] == k for a in drawn) for k in KINDS}))
         view = [k for k in ks if k["t"] >= week_start]
         if view:
             items = [{"kind": k, "t": t, "dir": dr, "bot": b, "top": tp,
