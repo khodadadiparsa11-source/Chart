@@ -156,7 +156,13 @@ def run_symbol(fa, source, sym, en, day):
 
     per_tf = {}
     for tf in TFS:
-        ks = feed.candles(source, sym, tf)
+        # Nothing past the close is looked at, by anything. The charts end at
+        # the close, so the judgement has to end there too: a level that
+        # survived the whole day was being retired by candles from days after
+        # it -- three days, for a coin that trades at the weekend -- and he was
+        # reading a chart where nothing had gone near it. The picture and the
+        # words have to be looking at the same window or one of them is lying.
+        ks = [k for k in feed.candles(source, sym, tf) if k["t"] < day_end]
         if len(ks) < 60:
             print("%s %s: only %d candles, skipped" % (en, tf, len(ks)))
             continue
