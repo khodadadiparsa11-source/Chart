@@ -1,13 +1,13 @@
-"""Can a GitHub runner reach OANDA, and does it answer for his instruments?
+"""A spot feed he can actually sign up for.
 
-His gold is XAUUSD from OANDA -- a CFD, not the COMEX future and not a token.
-OANDA publishes a REST API, so the report can print the exact prices on his
-own chart instead of something two dollars away from them. That needs a token,
-which only he can create, so this asks the cheaper question first: is the host
-reachable from the runner at all, and does it fail the way an endpoint that
-merely wants a token fails?
+His gold is OANDA's XAUUSD. OANDA is closed to him -- Iran is not on their list
+and every other country wants identity documents, which is not a door worth
+forcing on a financial account. So the question becomes: which free source of
+spot prices needs nothing but an email, answers from a GitHub runner, and
+carries gold, the four pairs and the two indices.
 
-401 is the good answer. Anything else means do not send him off to sign up.
+Reachability and what each returns without a key. Nothing here signs anything
+up; it only finds out which door is worth knocking on.
 """
 
 import json
@@ -15,45 +15,51 @@ import os
 import urllib.error
 import urllib.request
 
-PRACTICE = "https://api-fxpractice.oanda.com"
-LIVE = "https://api-fxtrade.oanda.com"
-INSTRUMENTS = ["XAU_USD", "EUR_USD", "GBP_USD", "USD_JPY", "NZD_USD",
-               "NAS100_USD", "US30_USD"]
-
-TOKEN = os.environ.get("OANDA_TOKEN", "")
+HEAD = {"User-Agent": "Mozilla/5.0"}
+KEY = os.environ.get("TWELVE_KEY", "demo")
 
 
-def ask(host, instrument, granularity="M15", count=5):
-    url = ("%s/v3/instruments/%s/candles?granularity=%s&count=%d&price=M"
-           % (host, instrument, granularity, count))
-    head = {"Accept-Datetime-Format": "UNIX"}
-    if TOKEN:
-        head["Authorization"] = "Bearer " + TOKEN
-    req = urllib.request.Request(url, headers=head)
-    with urllib.request.urlopen(req, timeout=25) as r:
-        return json.loads(r.read())
+def get(url, head=None, timeout=25):
+    req = urllib.request.Request(url, headers=head or HEAD)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode()
 
 
-for host, name in ((PRACTICE, "practice"), (LIVE, "live")):
+def twelve(symbol, interval="15min"):
+    url = ("https://api.twelvedata.com/time_series?symbol=%s&interval=%s"
+           "&outputsize=5&apikey=%s" % (urllib.parse.quote(symbol), interval, KEY))
+    j = json.loads(get(url))
+    if j.get("status") == "error":
+        raise RuntimeError(j.get("message", "")[:150])
+    return j["values"]
+
+
+import urllib.parse  # noqa: E402
+
+print("=== twelvedata (email signup, no documents) — key=%s ==="
+      % ("set" if KEY != "demo" else "demo"))
+for sym in ("XAU/USD", "EUR/USD", "GBP/USD", "USD/JPY", "NZD/USD"):
     try:
-        ask(host, "XAU_USD")
-        print("%-9s REACHABLE and answering" % name)
-    except urllib.error.HTTPError as e:
-        verdict = ("reachable -- it only wants a token" if e.code == 401
-                   else "reachable, but says %d" % e.code)
-        print("%-9s %s" % (name, verdict))
-    except Exception as e:                      # noqa: BLE001 - blocked is the answer
-        print("%-9s UNREACHABLE: %s" % (name, e))
+        v = twelve(sym)
+        print("  %-9s OK    last close %s   at %s" % (sym, v[0]["close"], v[0]["datetime"]))
+    except Exception as e:                       # noqa: BLE001 - the error is the finding
+        print("  %-9s %s" % (sym, e))
 
-if not TOKEN:
-    print("\nNo OANDA_TOKEN set, so only reachability was tested. With a token "
-          "this prints the last candle of each instrument for him to check "
-          "against his own chart.")
-else:
-    print("\nlast 15m close, to hold against his screen:")
-    for ins in INSTRUMENTS:
-        try:
-            c = ask(PRACTICE, ins)["candles"][-1]
-            print("  %-12s %s" % (ins, c["mid"]["c"]))
-        except Exception as e:                  # noqa: BLE001
-            print("  %-12s FAILED: %s" % (ins, e))
+print("\n=== keyless snapshots, just to see the true spot number ===")
+for name, url, pick in (
+    ("gold-api", "https://api.gold-api.com/price/XAU", lambda j: j.get("price")),
+    ("frankfurter", "https://api.frankfurter.app/latest?from=XAU&to=USD",
+     lambda j: (j.get("rates") or {}).get("USD")),
+):
+    try:
+        print("  %-12s %s" % (name, pick(json.loads(get(url)))))
+    except Exception as e:                       # noqa: BLE001
+        print("  %-12s unavailable: %s" % (name, e))
+
+print("\n=== what the report uses now ===")
+try:
+    rows = json.loads(get("https://data-api.binance.vision/api/v3/klines"
+                          "?symbol=XAUTUSDT&interval=15m&limit=1"))
+    print("  XAUTUSDT     %s" % rows[-1][4])
+except Exception as e:                           # noqa: BLE001
+    print("  XAUTUSDT     unavailable: %s" % e)
