@@ -37,7 +37,15 @@ LOW_TF = ["15m", "5m"]
 WEEK_DRAW = ["1h", "4h"]                 # a 5m gap is a hairline on a week
 
 SYMBOLS = [
-    ("طلا",        "yahoo",   "GC=F",     "GOLD"),
+    # Gold is XAUT, not the COMEX future. He held the two charts side by side
+    # and saw it: GC=F runs about forty dollars above his screen, because a
+    # future carries the interest to its delivery date. Forty dollars is fatal
+    # for a report whose entire output is levels to leave limit orders at.
+    # Measured against the price on his phone: GC=F +41.03, PAXG +6.45,
+    # XAUT +2.35. It is a token rather than spot, and it trades at the weekend
+    # when spot does not -- but two dollars is a chart he can act on and
+    # forty-one is not.
+    ("طلا",        "binance", "XAUTUSDT", "GOLD"),
     ("نزدک",       "yahoo",   "NQ=F",     "NASDAQ"),
     ("داوجونز",    "yahoo",   "YM=F",     "DOW"),
     ("یورو/دلار",  "yahoo",   "EURUSD=X", "EURUSD"),
@@ -230,6 +238,12 @@ def run_symbol(fa, source, sym, en, day):
     htf, hd = trend_at(per_tf, HIGH_TF)
     ltf, ld = trend_at(per_tf, LOW_TF)
     cap = ["📊 <b>%s</b> — %s" % (fa, S.iran(day_start, "%Y-%m-%d")), ""]
+    # The close, on its own line, so a feed drifting from the chart he reads is
+    # visible the same night instead of months later. The whole report was
+    # built on a gold future forty dollars above his screen and nothing in it
+    # said so; one number he can glance at is the guard against that happening
+    # again on any of the nine.
+    cap.append("بسته شدن روز: <code>%s</code>" % money(inday[-1]["c"]))
     cap.append("روند تایم بالا (%s): <b>%s</b>" % (htf or "—", word(hd)))
     cap.append("روند تایم پایین (%s): <b>%s</b>" % (ltf or "—", word(ld)))
     cap.append("")

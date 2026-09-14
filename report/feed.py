@@ -1,4 +1,4 @@
-"""Candles for COMEX gold, with the real traded volume spot gold cannot give.
+"""Candles, from whichever feed prints the prices he is actually looking at.
 
 Yahoo's chart endpoint needs no key and answers from a GitHub runner, and each
 interval carries its own history limit, measured rather than assumed:
@@ -6,9 +6,15 @@ interval carries its own history limit, measured rather than assumed:
     1m   7 days      5m   1 month     15m  1 month
     30m  1 month     1h   3 months    1d   6 months
 
-4h is not offered and is folded from the hourly candles. 90m is refused
-outright. Spot XAUUSD does not exist here at all -- the report is built on the
-futures contract, which moves with spot but does not print the same prices.
+4h is not offered and is folded from the hourly candles; 90m is refused
+outright.
+
+Yahoo has no spot gold -- XAUUSD=X and XAU=X both 404 -- only the COMEX future,
+which runs about forty dollars above spot because it carries the interest to
+its delivery date. That is fatal for a report made of limit-order levels, so
+gold comes from Binance now like the coins do. Choosing a symbol by what the
+free feed happens to offer, rather than by what he trades, is the mistake this
+docstring exists to stop the next person repeating.
 """
 
 import json
@@ -17,7 +23,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SYMBOL = "GC=F"
 UA = {"User-Agent": "Mozilla/5.0 (compatible; session-report)"}
 
 # interval -> the range that reaches as far back as the interval allows
@@ -118,12 +123,3 @@ def candles(source, symbol, tf):
     return fetch(symbol, "60m" if tf == "1h" else tf)
 
 
-def load(timeframes):
-    """Every timeframe the report needs, keyed by its own name."""
-    out = {}
-    for tf in timeframes:
-        if tf == "4h":
-            out[tf] = fold(fetch(SYMBOL, "60m"), 4)
-        else:
-            out[tf] = fetch(SYMBOL, "60m" if tf == "1h" else tf)
-    return out
