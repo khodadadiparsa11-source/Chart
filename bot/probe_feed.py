@@ -43,12 +43,14 @@ def yahoo(symbol, interval="15m", rng="5d"):
 
 import urllib.parse  # noqa: E402  (after the helpers, for readability above)
 
-for sym in ("GC=F", "XAUUSD=X", "MGC=F", "EURUSD=X"):
-    for interval, rng in (("15m", "5d"), ("1h", "1mo")):
-        try:
-            print("%-10s %-4s %s" % (sym, interval, yahoo(sym, interval, rng)))
-        except Exception as e:              # noqa: BLE001 - a probe reports failures
-            print("%-10s %-4s FAILED: %s" % (sym, interval, e))
+# A session report on every timeframe is only as good as the shortest one
+# available, so the question is how far back each interval actually goes.
+for interval, rng in (("1m", "7d"), ("2m", "5d"), ("5m", "1mo"), ("15m", "1mo"),
+                      ("30m", "1mo"), ("60m", "3mo"), ("90m", "3mo"), ("1d", "6mo")):
+    try:
+        print("GC=F %-4s %-4s %s" % (interval, rng, yahoo("GC=F", interval, rng)))
+    except Exception as e:                  # noqa: BLE001 - a probe reports failures
+        print("GC=F %-4s %-4s FAILED: %s" % (interval, rng, e))
 
 # Stooq as a fallback: plain CSV, no key, but daily only for most symbols.
 try:

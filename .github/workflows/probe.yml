@@ -4,6 +4,9 @@ name: feed probe
 # that carries volume -- and it will be deleted once that is settled.
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'bot/probe_feed.py'
 
 jobs:
   probe:
