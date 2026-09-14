@@ -153,41 +153,9 @@ def propulsion(obs, ks=None, within=120):
     return out
 
 
-def pools(sw, tol_frac=0.0004):
-    """Equal highs and equal lows -- where stops sit in a heap.
-
-    Two swings of the same kind at the same price, within a tolerance, because
-    "equal" on a chart has never meant equal to the tick.
-    """
-    out = []
-    for kind in ("high", "low"):
-        same = [s for s in sw if s["kind"] == kind]
-        for a, b in zip(same, same[1:]):
-            if abs(a["price"] - b["price"]) <= b["price"] * tol_frac:
-                out.append({"kind": kind, "price": (a["price"] + b["price"]) / 2,
-                            "t": b["t"], "i": b["i"], "first_t": a["t"]})
-    return out
-
-
 def mitigated_at(ks, start_i, bot, top):
     """The first candle after `start_i` to trade anywhere inside the band."""
     for j in range(start_i + 1, len(ks)):
         if ks[j]["l"] <= top and ks[j]["h"] >= bot:
-            return j
-    return None
-
-
-def swept_at(ks, start_i, price, kind):
-    """The first candle to take the level and close back the other side of it.
-
-    Taking it and holding is a break, and belongs in the other list. A sweep is
-    the wick through and the close back -- price reaching for what was resting
-    there and not staying.
-    """
-    for j in range(start_i + 1, len(ks)):
-        k = ks[j]
-        if kind == "high" and k["h"] > price and k["c"] < price:
-            return j
-        if kind == "low" and k["l"] < price and k["c"] > price:
             return j
     return None

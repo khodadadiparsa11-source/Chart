@@ -23,20 +23,24 @@ UP      = "#089981"
 DOWN    = "#F23645"
 
 SESSION_COLOURS = {"ASIA": "#EDF2FB", "LONDON": "#EDF7F0", "NEW YORK": "#FBEFF3"}
+# Three things are drawn and nothing else. He removed liquidity marks and the
+# BOS/CHoCH annotations by name -- the chart is the zones, and the direction is
+# said once in words beside it rather than stamped all over the candles.
 COL = {
     "ob_up":   "#089981", "ob_dn":   "#F23645",
     "fvg_up":  "#2962FF", "fvg_dn":  "#9C27B0",
-    "pb":      "#FF9800", "lq":      "#787B86",
-    "bos":     "#089981", "choch":   "#F23645",
+    "pb":      "#FF9800",
 }
 
 
 def render(title, ks, sessions, items, width=13.5, height=7.2, dpi=120):
     """Candles, session bands, and one labelled box or line per live item.
 
-    `sessions` is a list of (name, start_ms, end_ms); `items` carries the
-    order blocks, gaps, pools and breaks, each already filtered to the ones
-    still in play.
+    `sessions` is a list of (name, start_ms, end_ms); `items` carries the order
+    blocks, gaps and propulsion blocks still in play -- and only those. Each
+    carries its own `fmt` for the instrument's decimals, because the band's
+    prices are printed on the box: the message beside the image is a checklist
+    now, so the number he would leave an order at has to be readable here.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -66,9 +70,13 @@ def render(title, ks, sessions, items, width=13.5, height=7.2, dpi=120):
             continue
         ax.axvspan(min(xs) - 0.5, max(xs) + 0.5,
                    color=SESSION_COLOURS.get(name, "#F5F5F5"), zorder=0)
-        ax.text((min(xs) + max(xs)) / 2, 1.008, name, transform=ax.get_xaxis_transform(),
-                ha="center", va="bottom", color="#787B86", fontsize=8.5,
-                fontweight="bold")
+        # On the week's chart a session is a sliver, and three names centred on
+        # three slivers print on top of each other. The colour still says which
+        # is which; the word is dropped when there is no room for it.
+        if max(xs) - min(xs) + 1 >= n * 0.06:
+            ax.text((min(xs) + max(xs)) / 2, 1.008, name,
+                    transform=ax.get_xaxis_transform(), ha="center", va="bottom",
+                    color="#787B86", fontsize=8.5, fontweight="bold")
 
     lo = min(k["l"] for k in ks)
     hi = max(k["h"] for k in ks)
@@ -115,27 +123,21 @@ def render(title, ks, sessions, items, width=13.5, height=7.2, dpi=120):
             ax.add_patch(Rectangle((x0 - 0.5, it["bot"]), n - x0 + 0.5,
                                    it["top"] - it["bot"], facecolor=c, alpha=0.13,
                                    edgecolor=c, linewidth=1.1, zorder=5))
-            tag = kind + (" " + it["tf"] if it.get("tf") else "")
-            ax.text(x0 + 0.3, it["top"], tag, color="#FFFFFF", fontsize=8,
-                    fontweight="bold", va="bottom", zorder=7,
+            # The band's own prices go on the box. The message beside the
+            # image is a checklist now, so the number he would leave an order
+            # at has to be readable off the chart itself -- an axis on the far
+            # right is not a number, it is an estimate.
+            tag = "%s%s  %s–%s" % (kind, (" " + it["tf"]) if it.get("tf") else "",
+                                   it["fmt"](it["bot"]), it["fmt"](it["top"]))
+            # A band made near the right-hand edge would push its label off the
+            # image, and the price is the half that falls off. Past three
+            # quarters of the way across, the label hangs back from the edge
+            # instead of running out from the bar.
+            late = x0 > n * 0.75
+            ax.text(n - 0.5 if late else x0 + 0.3, it["top"], tag,
+                    color="#FFFFFF", fontsize=8, fontweight="bold",
+                    va="bottom", ha="right" if late else "left", zorder=7,
                     bbox=dict(boxstyle="round,pad=0.18", fc=c, ec="none"))
-        elif kind == "LQ":
-            c = COL["lq"]
-            ax.axhline(it["price"], color=c, linewidth=0.9,
-                       linestyle=(0, (5, 4)), alpha=0.9, zorder=5)
-            ax.text(n - 0.5, it["price"], " LQ " + it.get("note", ""),
-                    color=AXIS, fontsize=8, va="center", ha="right", zorder=7,
-                    bbox=dict(boxstyle="round,pad=0.18", fc="#FFFFFF", ec=c, lw=0.8))
-        elif kind in ("BOS", "CHoCH"):
-            x0 = xof(it["t"])
-            c = COL["bos" if kind == "BOS" else "choch"]
-            arrow = "▲" if it["dir"] == "up" else "▼"
-            y = it["price"]
-            ax.annotate("%s %s" % (kind, arrow), xy=(x0, y),
-                        xytext=(0, 14 if it["dir"] == "up" else -20),
-                        textcoords="offset points", ha="center",
-                        color="#FFFFFF", fontsize=7.5, fontweight="bold", zorder=8,
-                        bbox=dict(boxstyle="round,pad=0.2", fc=c, ec="none"))
 
     ax.set_xlim(-1, n + 0.5)
     ax.set_ylim(lo - pad, hi + pad)
