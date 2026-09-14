@@ -4,9 +4,13 @@ name: session report
 # changes its clocks and Iran does not, so the schedule is set an hour later
 # than the earliest possible close and the script works out the real session
 # boundaries itself.
+# Cancelled by him on 2026-09-14. The schedule is commented out rather than the
+# file deleted: nothing here is broken code, the instrument underneath it was
+# wrong, and the day of work in it should not have to be rewritten if he ever
+# wants it back. Uncomment the two lines to start the nightly send again.
 on:
-  schedule:
-    - cron: '15 22 * * 1-5'
+  # schedule:
+  #   - cron: '15 22 * * 1-5'
   workflow_dispatch:
     inputs:
       only:
