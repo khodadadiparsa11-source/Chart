@@ -8,6 +8,7 @@ Only unmitigated items are drawn. Anything price has already traded back
 through is history, and drawing it would bury the levels that still matter.
 """
 
+import bisect
 import io
 
 from sessions import iran
@@ -55,6 +56,7 @@ def render(title, ks, sessions, items, width=13.5, height=7.2, dpi=120):
     ax.set_axisbelow(True)
 
     t_index = {k["t"]: i for i, k in enumerate(ks)}
+    times = [k["t"] for k in ks]
     n = len(ks)
 
     # Session bands first, so they sit behind everything else.
@@ -82,7 +84,22 @@ def render(title, ks, sessions, items, width=13.5, height=7.2, dpi=120):
                                facecolor=col, edgecolor=col, linewidth=0.4, zorder=4))
 
     def xof(t):
-        return t_index.get(t, 0)
+        """The candle that CONTAINS t, not the one stamped exactly t.
+
+        The week's chart is drawn on hourly candles but carries levels found on
+        five- and fifteen-minute ones, and a level made at 14:35 matches no
+        hourly stamp at all. The old lookup fell back to bar zero when it missed
+        -- silently, with no error -- so a zone made yesterday was drawn from the
+        left edge of the week, and the price action of four days before it
+        looked like it had traded straight through. It had not: the zone did not
+        exist yet. Snapping back to the candle the moment falls inside is the
+        only placement that can be read.
+        """
+        i = t_index.get(t)
+        if i is not None:
+            return i
+        j = bisect.bisect_right(times, t) - 1
+        return max(0, min(j, n - 1))
 
     # Zones run from where they formed to the right-hand edge: a level that has
     # not been traded through is still in play, and stopping the box early would
@@ -98,7 +115,8 @@ def render(title, ks, sessions, items, width=13.5, height=7.2, dpi=120):
             ax.add_patch(Rectangle((x0 - 0.5, it["bot"]), n - x0 + 0.5,
                                    it["top"] - it["bot"], facecolor=c, alpha=0.13,
                                    edgecolor=c, linewidth=1.1, zorder=5))
-            ax.text(x0 + 0.3, it["top"], kind, color="#FFFFFF", fontsize=8,
+            tag = kind + (" " + it["tf"] if it.get("tf") else "")
+            ax.text(x0 + 0.3, it["top"], tag, color="#FFFFFF", fontsize=8,
                     fontweight="bold", va="bottom", zorder=7,
                     bbox=dict(boxstyle="round,pad=0.18", fc=c, ec="none"))
         elif kind == "LQ":

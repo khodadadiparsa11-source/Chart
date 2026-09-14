@@ -259,7 +259,7 @@ def run_symbol(fa, source, sym, en, day):
         if not alive:
             body.append("هیچ سطح دست‌نخورده‌ای نمانده.")
         view = [k for k in ks if k["t"] >= week_start]
-        items = [{"kind": k, "t": t, "dir": dr, "bot": b, "top": tp}
+        items = [{"kind": k, "t": t, "dir": dr, "bot": b, "top": tp, "tf": tf}
                  for k, tf, b, tp, dr, t in alive[:12]]
         png = draw.render("%s   1h   last 7 days   Iran time" % en, view,
                           S.day_sessions(day), items) if view else None
