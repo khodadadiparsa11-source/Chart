@@ -1,65 +1,83 @@
-"""Which symbol is the gold he actually trades?
+"""Is there a free feed for the gold he actually trades?
 
-The report was built on GC=F -- COMEX futures -- because that is what Yahoo
-offers first for "gold". He trades XAUUSD, spot. They move together and are not
-the same instrument: different price, different highs and lows, different
-trading hours. He spotted it by holding the two charts side by side.
+Yahoo has no spot gold -- XAUUSD=X and XAU=X both 404 -- only COMEX futures,
+which run about forty dollars above spot because a future carries the interest
+to its delivery date. Forty dollars is fatal for a report whose whole output is
+price levels to leave limit orders at.
 
-This asks the feed directly rather than arguing from screenshots: what does each
-candidate return, and how far apart are they really.
+So: what else is reachable without an API key, and how close does it actually
+sit to the chart he reads.
 """
 
+import csv
+import io
 import json
+import urllib.parse
 import urllib.request
 
-HOST = "https://query1.finance.yahoo.com/v8/finance/chart/"
 HEAD = {"User-Agent": "Mozilla/5.0"}
 
-CANDIDATES = [
-    ("GC=F",     "COMEX gold futures, front month (what the report uses now)"),
-    ("XAUUSD=X", "spot gold against the dollar"),
-    ("XAU=X",    "another spelling Yahoo sometimes carries"),
-    ("MGC=F",    "micro gold futures"),
+
+def get(url, timeout=30):
+    req = urllib.request.Request(url, headers=HEAD)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def yahoo(symbol, interval="15m", rng="5d"):
+    url = ("https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=%s&range=%s"
+           % (urllib.parse.quote(symbol), interval, rng))
+    res = json.loads(get(url))["chart"]["result"][0]
+    q, ts = res["indicators"]["quote"][0], res["timestamp"]
+    return [{"t": ts[i], "c": q["close"][i], "h": q["high"][i], "l": q["low"][i]}
+            for i in range(len(ts)) if q["close"][i] is not None]
+
+
+def binance(symbol, interval="15m", limit=500):
+    for host in ("api.binance.com", "api-gcp.binance.com", "data-api.binance.vision"):
+        try:
+            url = ("https://%s/api/v3/klines?symbol=%s&interval=%s&limit=%d"
+                   % (host, symbol, interval, limit))
+            rows = json.loads(get(url))
+            return [{"t": r[0] // 1000, "c": float(r[4]),
+                     "h": float(r[2]), "l": float(r[3])} for r in rows]
+        except Exception:                        # noqa: BLE001 - try the next host
+            continue
+    raise RuntimeError("every Binance host refused")
+
+
+def stooq(symbol, interval="5"):
+    body = get("https://stooq.com/q/d/l/?s=%s&i=%s" % (symbol, interval)).decode()
+    rows = list(csv.DictReader(io.StringIO(body)))
+    if not rows or "Close" not in (rows[0] or {}):
+        raise RuntimeError("no usable rows: %s" % body[:120].replace("\n", " "))
+    return [{"t": r["Date"], "c": float(r["Close"]),
+             "h": float(r["High"]), "l": float(r["Low"])} for r in rows]
+
+
+SOURCES = [
+    ("GC=F  (yahoo)",     lambda: yahoo("GC=F"),        "COMEX futures -- what the report uses"),
+    ("PAXGUSDT (binance)", lambda: binance("PAXGUSDT"), "token redeemable for one ounce of gold"),
+    ("XAUTUSDT (binance)", lambda: binance("XAUTUSDT"), "the same idea from Tether"),
+    ("xauusd (stooq)",    lambda: stooq("xauusd"),      "spot, if stooq serves intraday without a key"),
 ]
 
-
-def fetch(symbol, interval="15m", rng="5d"):
-    url = "%s%s?interval=%s&range=%s" % (HOST, urllib.parse.quote(symbol), interval, rng)
-    req = urllib.request.Request(url, headers=HEAD)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        j = json.loads(r.read())
-    res = j["chart"]["result"][0]
-    q = res["indicators"]["quote"][0]
-    ts = res["timestamp"]
-    ks = [{"t": ts[i], "h": q["high"][i], "l": q["low"][i], "c": q["close"][i]}
-          for i in range(len(ts)) if q["close"][i] is not None]
-    return ks
-
-
-import urllib.parse  # noqa: E402 - after the constants, for readability
-
-for sym, what in CANDIDATES:
+series = {}
+for name, call, what in SOURCES:
     try:
-        ks = fetch(sym)
-    except Exception as e:                      # noqa: BLE001 - a missing symbol is an answer
-        print("%-10s UNAVAILABLE  (%s)  -- %s" % (sym, e, what))
+        ks = call()
+    except Exception as e:                       # noqa: BLE001 - failure is the answer
+        print("%-20s UNAVAILABLE  (%s)  -- %s" % (name, e, what))
         continue
-    hi = max(k["h"] for k in ks)
-    lo = min(k["l"] for k in ks)
-    print("%-10s %5d candles   last %.2f   5d high %.2f   low %.2f   -- %s"
-          % (sym, len(ks), ks[-1]["c"], hi, lo, what))
+    series[name] = ks
+    print("%-20s %4d candles   last %9.2f   high %9.2f   low %9.2f   -- %s"
+          % (name, len(ks), ks[-1]["c"], max(k["h"] for k in ks),
+             min(k["l"] for k in ks), what))
 
-# The number that settles it: how far apart the two are at the same moment.
-try:
-    a = {k["t"]: k["c"] for k in fetch("GC=F")}
-    b = {k["t"]: k["c"] for k in fetch("XAUUSD=X")}
-    both = sorted(set(a) & set(b))
-    if both:
-        gaps = [a[t] - b[t] for t in both]
-        print("\nshared 15m candles: %d" % len(both))
-        print("futures minus spot: last %+.2f   mean %+.2f   min %+.2f   max %+.2f"
-              % (gaps[-1], sum(gaps) / len(gaps), min(gaps), max(gaps)))
-    else:
-        print("\nno 15m candle stamps in common -- their sessions do not line up")
-except Exception as e:                          # noqa: BLE001
-    print("\ncomparison failed: %s" % e)
+# His screen said 4296.47 at 02:12 Tehran. Distance from that is the only test
+# that matters: a level forty dollars off his chart cannot be traded from.
+HIS = 4296.47
+print("\nagainst his own screen (%.2f):" % HIS)
+for name, ks in series.items():
+    print("  %-20s %+8.2f   (%+.2f%%)"
+          % (name, ks[-1]["c"] - HIS, (ks[-1]["c"] - HIS) / HIS * 100))
