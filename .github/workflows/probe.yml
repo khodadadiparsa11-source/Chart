@@ -1,0 +1,17 @@
+name: feed probe
+
+# Manual only. This exists to answer one question -- is there a free gold feed
+# that carries volume -- and it will be deleted once that is settled.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python bot/probe_feed.py
