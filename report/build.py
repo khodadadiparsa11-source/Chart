@@ -36,6 +36,12 @@ LOW_TF = ["15m", "5m"]
 
 WEEK_DRAW = ["1h", "4h"]                 # a 5m gap is a hairline on a week
 
+# Nasdaq and Dow were dropped on 2026-09-14. They were the index FUTURES, and
+# nobody could say whether they matched the charts he opens -- 334 and 466
+# points from the cash index, which is the same mistake gold made in dollars.
+# He cut them rather than carry a symbol whose prices nobody had checked: an
+# unverified level in a report you place limit orders from is worse than no
+# level at all.
 SYMBOLS = [
     # Gold is XAUT, not the COMEX future. He held the two charts side by side
     # and saw it: GC=F runs about forty dollars above his screen, because a
@@ -46,8 +52,6 @@ SYMBOLS = [
     # when spot does not -- but two dollars is a chart he can act on and
     # forty-one is not.
     ("طلا",        "binance", "XAUTUSDT", "GOLD"),
-    ("نزدک",       "yahoo",   "NQ=F",     "NASDAQ"),
-    ("داوجونز",    "yahoo",   "YM=F",     "DOW"),
     ("یورو/دلار",  "yahoo",   "EURUSD=X", "EURUSD"),
     ("پوند/دلار",  "yahoo",   "GBPUSD=X", "GBPUSD"),
     ("دلار/ین",    "yahoo",   "USDJPY=X", "USDJPY"),
