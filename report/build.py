@@ -71,22 +71,29 @@ def analyse(ks, day_start, day_end):
     obs = ST.order_blocks(ks, evs)
     pb_at = {p["i"] for p in ST.propulsion(obs, ks)}
 
-    live = []
+    live, gone = [], []
+
+    def sort_it(kind, start_i, t, direction, bot, top):
+        j = ST.mitigated_at(ks, start_i, bot, top)
+        if j is None:
+            live.append({"kind": kind, "t": t, "dir": direction,
+                         "bot": bot, "top": top})
+        else:
+            gone.append({"kind": kind, "t": t, "dir": direction,
+                         "bot": bot, "top": top, "hit": ks[j]["t"],
+                         "depth": ST.mitigation_depth(ks[j], bot, top, direction)})
+
     for g in ST.fvgs(ks):
-        if (day_start <= g["t"] < day_end
-                and ST.mitigated_at(ks, g["i"], g["bot"], g["top"]) is None):
-            live.append({"kind": "FVG", "t": g["t"], "dir": g["dir"],
-                         "bot": g["bot"], "top": g["top"]})
+        if day_start <= g["t"] < day_end:
+            sort_it("FVG", g["i"], g["t"], g["dir"], g["bot"], g["top"])
     for ob in obs:
-        if (day_start <= ob["t"] < day_end
-                and ST.mitigated_at(ks, ob["break_i"], ob["bot"], ob["top"]) is None):
-            live.append({"kind": "PB" if ob["i"] in pb_at else "OB",
-                         "t": ob["t"], "dir": ob["dir"],
-                         "bot": ob["bot"], "top": ob["top"]})
+        if day_start <= ob["t"] < day_end:
+            sort_it("PB" if ob["i"] in pb_at else "OB", ob["break_i"],
+                    ob["t"], ob["dir"], ob["bot"], ob["top"])
 
     # Breaks after the close exist in the feed when the report is rebuilt later,
     # and letting them set the trend would describe a day by what followed it.
-    return live, [e for e in evs if e["t"] < day_end]
+    return live, [e for e in evs if e["t"] < day_end], gone
 
 
 def trend_at(per_tf, prefer):
@@ -169,7 +176,7 @@ def run_symbol(fa, source, sym, en, day):
     for tf in TFS:
         if tf not in per_tf:
             continue
-        ks, (live, _) = per_tf[tf]
+        ks, (live, _, gone) = per_tf[tf]
         view = [k for k in ks if day_start <= k["t"] < day_end]
         if not view:
             continue
@@ -178,6 +185,17 @@ def run_symbol(fa, source, sym, en, day):
                                  % (en, tf, S.iran(day_start, "%d %b %Y")),
                                  view, sess, items))
         rows.append((tf, flags(live)))
+
+        # What was dropped and how deeply, to the log. "Mitigated" currently
+        # means a single touch anywhere in the band, which is a choice and not
+        # a fact -- these depths are the only way to see whether it is throwing
+        # away levels price merely grazed. Shallow numbers here mean the rule
+        # is too strict; numbers near 1.0 mean the levels really were eaten.
+        for g in gone:
+            print("  %s %s dropped %s %s-%s made %s hit %s depth %.0f%%"
+                  % (en, tf, g["kind"], money(g["bot"]), money(g["top"]),
+                     S.iran(g["t"], "%m-%d %H:%M"),
+                     S.iran(g["hit"], "%m-%d %H:%M"), g["depth"] * 100))
 
     # ---- and the week behind it, last in the album
     if "1h" in per_tf:

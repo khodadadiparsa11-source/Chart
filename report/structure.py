@@ -96,7 +96,7 @@ def order_blocks(ks, evs, max_back=60):
     every rally qualifies, and the list becomes noise with a name on it. The
     zone is the whole candle, wick included.
     """
-    out = []
+    out, seen = [], set()
     for e in evs:
         j = e["i"]
         stop = max(0, e["i"] - max_back)
@@ -110,8 +110,12 @@ def order_blocks(ks, evs, max_back=60):
                 found = j
                 break
             j -= 1
-        if found is None:
+        if found is None or found in seen:
+            # Two breaks can walk back to the same candle, and it is one order
+            # block either way. The earliest break is the one kept: that is when
+            # the block did its work, and mitigation is measured from it.
             continue
+        seen.add(found)
         k = ks[found]
         out.append({"i": found, "t": k["t"], "dir": e["dir"],
                     "bot": k["l"], "top": k["h"], "vol": k["v"],
@@ -159,3 +163,19 @@ def mitigated_at(ks, start_i, bot, top):
         if ks[j]["l"] <= top and ks[j]["h"] >= bot:
             return j
     return None
+
+
+def mitigation_depth(k, bot, top, direction):
+    """How far INTO the band the candle that consumed it actually reached, 0..1.
+
+    The difference between a wick grazing the edge and price eating the whole
+    thing, which "mitigated" on its own does not say. Price arrives at a
+    bearish band from below and at a bullish one from above, so the entry edge
+    depends on the direction the band faces.
+    """
+    height = top - bot
+    if height <= 0:
+        return 1.0
+    if direction == "down":
+        return max(0.0, min(1.0, (min(k["h"], top) - bot) / height))
+    return max(0.0, min(1.0, (top - max(k["l"], bot)) / height))
