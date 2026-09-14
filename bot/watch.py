@@ -131,6 +131,13 @@ SCAN = 500                       # A zone is only findable while it is still
 # Judging an alert afterwards, in two steps: did price ever come back to the
 # band at all, and once it did, did it leave by a full zone height before
 # trading a full zone height through it?
+# How far price must travel for the zone to have earned the word. One zone
+# height was too easy to mean anything: these bands are deliberately tight, so a
+# height can be a tenth of a percent of price, and price wanders that far on its
+# own in minutes. At that bar everything "reacts" and the two columns of the
+# tally stop telling them apart, which defeats the only measurement there is.
+REACT_MULT = 2.0                 # zone heights in favour to count as a reaction
+FAIL_MULT  = 1.0                 # zone heights through it to count as a failure
 OUT_WAIT = 24                    # candles after the touch before it counts flat
 NEVER_AFTER = 200                # candles without a touch before giving up
 
@@ -655,34 +662,51 @@ def settle(state, symbol, by_tf):
                     del state["open"][key]
                 continue
 
-        # step two: did it react off the band, or trade through it?
+        # step two: how far did price travel each way? Counting is not enough
+        # at three samples a day -- the size of the move is the thing worth
+        # knowing, and a verdict throws it away. Both excursions are measured
+        # in zone heights and recorded whatever the verdict.
         verdict = None
         seen = 0
+        best = 0.0
+        worst = 0.0
         for k in ks:
             if k["t"] <= r["touched"]:
                 continue
             seen += 1
             if r["side"] == "demand":
-                if k["h"] >= r["top"] + h:
-                    verdict = "reacted"
-                elif k["l"] <= r["bot"] - h:
-                    verdict = "failed"
+                fav = (k["h"] - r["top"]) / h
+                adv = (r["bot"] - k["l"]) / h
             else:
-                if k["l"] <= r["bot"] - h:
-                    verdict = "reacted"
-                elif k["h"] >= r["top"] + h:
-                    verdict = "failed"
-            if verdict or seen >= OUT_WAIT:
-                verdict = verdict or "flat"
+                fav = (r["bot"] - k["l"]) / h
+                adv = (k["h"] - r["top"]) / h
+            best = max(best, fav)
+            worst = max(worst, adv)
+            # The adverse side is read first. When one candle reaches both, the
+            # order inside it is unknowable, and calling that a reaction would
+            # be flattering the zone with a coin toss.
+            if worst >= FAIL_MULT:
+                verdict = "failed"
+            elif best >= REACT_MULT:
+                verdict = "reacted"
+            elif seen >= OUT_WAIT:
+                verdict = "flat"
+            if verdict:
                 break
         if verdict:
-            # Near misses are counted in their own column. Mixed into one tally
-            # they would quietly answer a different question than the one asked.
-            bucket = ("r_" if r.get("review") else "") + verdict
-            state["day"][bucket] = state["day"].get(bucket, 0) + 1
-            print("outcome %s %s %s -> %s%s" % (symbol, r["tf"], r["side"],
-                                                verdict,
-                                                " (review)" if r.get("review") else ""))
+            pfx = "r_" if r.get("review") else ""
+            day = state["day"]
+            day[pfx + verdict] = day.get(pfx + verdict, 0) + 1
+            day[pfx + "n"] = day.get(pfx + "n", 0) + 1
+            day[pfx + "best"] = day.get(pfx + "best", 0.0) + best
+            day[pfx + "worst"] = day.get(pfx + "worst", 0.0) + worst
+            mid_price = (r["top"] + r["bot"]) / 2
+            if mid_price > 0:
+                day[pfx + "bestpct"] = (day.get(pfx + "bestpct", 0.0)
+                                        + best * h / mid_price * 100)
+            print("outcome %s %s %s -> %s (best %.1fx, worst %.1fx)%s"
+                  % (symbol, r["tf"], r["side"], verdict, best, worst,
+                     " (review)" if r.get("review") else ""))
             del state["open"][key]
 
 
@@ -700,36 +724,40 @@ def daily_report(state, now):
         never = day.get("never", 0)
         done = react + fail + flat + never
         rs = day.get("review", 0)
-        rreact = day.get("r_reacted", 0)
-        rfail = day.get("r_failed", 0)
-        rflat = day.get("r_flat", 0)
-        rnever = day.get("r_never", 0)
-        rdone = rreact + rfail + rflat + rnever
-        if sent or done or rs or rdone:
+
+        def block(pfx):
+            n = day.get(pfx + "n", 0)
+            if n == 0:
+                return "هیچ‌کدام هنوز بسته نشده\n"
+            return ("واکنش داد: <b>{a}</b> · رد شد: <b>{b}</b> · بی‌واکنش: <b>{c}</b>"
+                    " · برنگشت: <b>{d}</b>\n"
+                    "میانگین حرکت به نفع: <b>{e:.1f}×</b> ارتفاع محدوده "
+                    "(<b>{g:.2f}٪</b> قیمت)\n"
+                    "میانگین حرکت خلاف: <b>{f:.1f}×</b>\n").format(
+                        a=day.get(pfx + "reacted", 0), b=day.get(pfx + "failed", 0),
+                        c=day.get(pfx + "flat", 0), d=day.get(pfx + "never", 0),
+                        e=day.get(pfx + "best", 0.0) / n,
+                        f=day.get(pfx + "worst", 0.0) / n,
+                        g=day.get(pfx + "bestpct", 0.0) / n)
+
+        settled = day.get("n", 0) + day.get("r_n", 0)
+        if sent or rs or settled:
             waiting = sum(1 for r in state["open"].values() if not r.get("touched"))
             send_text(
                 "📋 <b>کارنامه‌ی {d}</b>\n\n"
-                "<b>زون‌های تایید شده</b>\n"
-                "ارسالی: <b>{sent}</b>\n"
-                "برگشت و واکنش داد: <b>{react}</b>\n"
-                "برگشت و رد شد: <b>{fail}</b>\n"
-                "برگشت ولی تکون نخورد: <b>{flat}</b>\n"
-                "اصلاً برنگشت: <b>{never}</b>\n\n"
-                "<b>نزدیک‌به‌قبولی‌ها (فقط بررسی)</b>\n"
-                "ارسالی: <b>{rs}</b>\n"
-                "برگشت و واکنش داد: <b>{rreact}</b>\n"
-                "برگشت و رد شد: <b>{rfail}</b>\n"
-                "برگشت ولی تکون نخورد: <b>{rflat}</b>\n"
-                "اصلاً برنگشت: <b>{rnever}</b>\n\n"
+                "<b>زون‌های تایید شده</b> — ارسالی: <b>{sent}</b>\n"
+                "{blockA}\n"
+                "<b>نزدیک‌به‌قبولی‌ها (فقط بررسی)</b> — ارسالی: <b>{rs}</b>\n"
+                "{blockB}\n"
                 "هنوز منتظر برگشت قیمت: <b>{waiting}</b>\n\n"
-                "<i>دو ستون عمداً جدان. اگر ستون دوم به همان خوبی ستون اول بود، "
-                "یعنی آن فیلتر چیزی اضافه نمی‌کند و باید برداشته شود؛ اگر بدتر "
-                "بود، یعنی دارد کارش را می‌کند. عددها کم‌اند و هنوز چیزی را "
-                "ثابت نمی‌کنند. این اندازه‌گیری واکنش است، نه وین‌ریت.</i>"
-                .format(d=day.get("date"), sent=sent, react=react, fail=fail,
-                        flat=flat, never=never, rs=rs, rreact=rreact,
-                        rfail=rfail, rflat=rflat, rnever=rnever,
-                        waiting=waiting))
+                "<i>«واکنش» یعنی قیمت <b>دو برابر</b> ارتفاع محدوده به نفعش رفت "
+                "قبل از اینکه یک برابر ازش رد بشه. دو ستون عمداً جدان: اگر ستون "
+                "دوم به‌اندازه‌ی اولی خوب بود، آن فیلتر چیزی اضافه نمی‌کند. "
+                "درصدِ کنار عدد مهم‌تر از خود عدد است — ده برابرِ یک محدوده‌ی "
+                "خیلی باریک، ممکن است حرکتی باشد که ارزش معامله ندارد. این "
+                "اندازه‌گیری واکنش است، نه وین‌ریت.</i>"
+                .format(d=day.get("date"), sent=sent, rs=rs, waiting=waiting,
+                        blockA=block(""), blockB=block("r_")))
     state["day"] = {"date": today}
 
 

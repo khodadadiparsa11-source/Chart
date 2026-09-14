@@ -92,10 +92,22 @@ First: **does price ever come back to it?** A zone price never revisits cost
 nothing and earned nothing, and is counted as such rather than quietly
 forgotten — reporting a level early means accepting that some never fill.
 
-Then, once price arrives: leaving the band by one zone height counts as a
-**reaction**, trading one zone height through it counts as a **failure**, and
-neither within 24 candles counts as **no reaction**. One tally a day reports
-all four counts.
+Then, once price arrives: **twice** the zone height in favour before one
+against counts as a **reaction**, one zone height through counts as a
+**failure**, and neither within 24 candles counts as **no reaction**. When a
+single candle reaches both, it is recorded as a failure — the order of events
+inside a candle is unknowable, and calling it a reaction would be flattering
+the zone with a coin toss.
+
+One zone height was the first bar and it was too low to mean anything. These
+bands are deliberately tight, so a height can be a tenth of a percent of price,
+and price wanders that far on its own; at that threshold everything "reacts"
+and the two columns stop telling each other apart.
+
+The tally reports the **distances**, not only the counts: the average travel
+each way in zone heights, and the favourable one also as a percentage of price.
+The percentage is the one that matters — ten zone heights on a very narrow band
+can still be a move too small to trade.
 
 It is a measurement of whether price reacted, not a win rate — no stop, no
 target, no spread. More alerts prove nothing on their own; what happened after
