@@ -29,6 +29,7 @@ import structure as ST
 import tg
 
 TFS = ["5m", "15m", "1h", "4h"]
+WEEK_DRAW = ["1h", "4h"]        # what the week's hourly chart is drawn from
 TF_FA = {"5m": "۵ دقیقه", "15m": "۱۵ دقیقه", "1h": "۱ ساعته", "4h": "۴ ساعته"}
 
 SYMBOLS = [
@@ -249,18 +250,42 @@ def run_symbol(fa, source, sym, en, day):
             if not dup:
                 kept.append(it)
         alive = kept
-        alive.sort(key=lambda a: abs((a[2] + a[3]) / 2 - price))
+        near = lambda a: abs((a[2] + a[3]) / 2 - price)
+
+        # Grouped by timeframe rather than thrown into one list sorted by
+        # distance. One list ranked by distance is the wrong ruler over a week:
+        # five-minute gaps are made by the dozen and they all sit within a few
+        # dollars of the price, so they take every place and the levels a big
+        # move left behind -- which are exactly the ones still worth a limit
+        # order a week later -- fall off the end. He pointed at one: an order
+        # block at the top of a hundred-dollar drop, untouched since, absent
+        # from the chart because twelve five-minute gaps were nearer.
         body = ["🗓 <b>%s — هفت روز گذشته</b>" % fa, "",
-                "سطح‌هایی که هنوز دست‌نخورده‌اند، نزدیک‌ترین به قیمت اول:", ""]
-        for kind, tf, bot, top, dr, t in alive[:20]:
-            body.append("<code>%s–%s</code> %s %s · %s · %s"
-                        % (fmt(bot, d), fmt(top, d), ARROW[dr], kind,
-                           TF_FA[tf], S.iran(t, "%m-%d")))
+                "سطح‌هایی که هنوز دست‌نخورده‌اند — به تفکیک تایم‌فریم، "
+                "نزدیک‌ترین به قیمت اول:"]
+        for tf in reversed(TFS):
+            rows = sorted([a for a in alive if a[1] == tf], key=near)
+            if not rows:
+                continue
+            body.append("")
+            body.append("<b>%s</b>" % TF_FA[tf])
+            for kind, _tf, bot, top, dr, t in rows[:6]:
+                body.append("   <code>%s–%s</code> %s %s · %s"
+                            % (fmt(bot, d), fmt(top, d), ARROW[dr], kind,
+                               S.iran(t, "%m-%d")))
         if not alive:
+            body.append("")
             body.append("هیچ سطح دست‌نخورده‌ای نمانده.")
         view = [k for k in ks if k["t"] >= week_start]
+
+        # The week's chart is hourly, so it carries the levels an hourly chart
+        # can actually show. A five-minute gap seven days old is a hairline on
+        # it, and forty of them buries everything else -- the finer timeframes
+        # are still checked, still listed above, and still drawn on their own
+        # charts, where they are the day's business.
+        drawn = sorted([a for a in alive if a[1] in WEEK_DRAW], key=near)
         items = [{"kind": k, "t": t, "dir": dr, "bot": b, "top": tp, "tf": tf}
-                 for k, tf, b, tp, dr, t in alive[:12]]
+                 for k, tf, b, tp, dr, t in drawn[:16]]
         png = draw.render("%s   1h   last 7 days   Iran time" % en, view,
                           S.day_sessions(day), items) if view else None
         if png:
