@@ -893,21 +893,34 @@ def main():
     sent = 0
     checked = 0
     near = []
+    # Five doors stand between passing the score floor and arriving in the
+    # chat, and every one of them used to close without a word. A run could
+    # report a zone above the floor and zero alerts in the same breath, which
+    # is the same log line for "nothing qualified" and "something qualified and
+    # I dropped it" -- the exact confusion the funnel was built to end, left in
+    # place for the last five steps.
+    shut = {"already sent": 0, "symbol cooldown": 0, "run or daily cap": 0,
+            "flow budget spent": 0, "flow lookup failed": 0}
     for c in candidates:
         if sent >= MAX_PER_RUN or state["day"].get("sent", 0) >= DAILY_CAP:
-            break
+            shut["run or daily cap"] += 1
+            continue
         if checked >= MAX_DELTA_CALLS:
-            break
+            shut["flow budget spent"] += 1
+            continue
         sym, z = c["symbol"], c["z"]
         key = "%s|%s|%s|%d" % (sym, z["tf"], z["side"], z["formed"])
         if key in state["zones"]:
+            shut["already sent"] += 1
             continue
         if now - state["symbol_last"].get(sym, 0) < COOLDOWN_MIN * 60:
+            shut["symbol cooldown"] += 1
             continue
 
         d = base_delta(sym, z)
         checked += 1
         if d is None:
+            shut["flow lookup failed"] += 1
             continue
         z["delta"] = d
         pts = score(z, len(c["agree"]), d)
@@ -953,6 +966,9 @@ def main():
         print("review %s %s %s %.1f (%s)" % (sym, z["tf"], z["side"], pts, why))
 
     save_state(state)
+    print("after the score floor: sent=%d  review=%d  near miss=%d  %s"
+          % (sent, shown, len(near),
+             "  ".join("%s=%d" % (k, v) for k, v in shut.items() if v) or "nothing shut out"))
     print("done, %d alert(s), %d for review, %d open" % (sent, shown, len(state["open"])))
 
 
