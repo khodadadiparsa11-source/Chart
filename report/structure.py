@@ -119,22 +119,37 @@ def order_blocks(ks, evs, max_back=60):
     return out
 
 
-def propulsion(obs):
-    """An order block that lands on top of an older one facing the same way.
+def propulsion(obs, ks=None, within=120):
+    """An order block landing on a RECENT one facing the same way.
+
+    "Recent" is the whole point and was missing at first: with weeks of candles
+    in hand, almost every block eventually overlaps some older block somewhere,
+    and the term collapses into meaning nothing -- one run reported no order
+    blocks at all and three propulsion blocks, which is the tell. The older
+    block has to be close enough behind to still be the same piece of business,
+    and must not have been traded through before this one formed.
 
     The least agreed term of the set, and it is flagged as such wherever it is
-    printed. The reading here is continuation: size added where size was already
-    worked, rather than a fresh decision.
+    printed.
     """
     out = []
     for n, ob in enumerate(obs):
-        for older in obs[:n]:
-            if (older["dir"] == ob["dir"]
-                    and older["bot"] <= ob["top"] and ob["bot"] <= older["top"]):
-                marked = dict(ob)
-                marked["over"] = older["t"]
-                out.append(marked)
+        for older in reversed(obs[:n]):
+            if ob["i"] - older["i"] > within:
                 break
+            if older["dir"] != ob["dir"]:
+                continue
+            if not (older["bot"] <= ob["top"] and ob["bot"] <= older["top"]):
+                continue
+            if ks is not None:
+                spent = mitigated_at(ks[:ob["i"]], older["break_i"],
+                                     older["bot"], older["top"])
+                if spent is not None:
+                    continue
+            marked = dict(ob)
+            marked["over"] = older["t"]
+            out.append(marked)
+            break
     return out
 
 

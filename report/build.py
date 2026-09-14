@@ -60,7 +60,7 @@ def analyse(ks, day_start, day_end, sess):
     sw = ST.swings(ks)
     evs = ST.breaks(ks, sw)
     obs = ST.order_blocks(ks, evs)
-    pb_at = {p["i"] for p in ST.propulsion(obs)}
+    pb_at = {p["i"] for p in ST.propulsion(obs, ks)}
     gaps = ST.fvgs(ks)
     pools = ST.pools(sw)
 
@@ -98,7 +98,11 @@ def analyse(ks, day_start, day_end, sess):
                            else ("equal %ss" % p["kind"])})
 
     day_evs = [e for e in evs if day_start <= e["t"] < day_end]
-    return made, live, lq, day_evs, evs
+    # Only breaks up to the close count. Candles after it exist in the feed when
+    # the report is rebuilt later, and letting them set the trend would describe
+    # a day by what happened after it.
+    upto = [e for e in evs if e["t"] < day_end]
+    return made, live, lq, day_evs, upto
 
 
 def trend_of(evs):
@@ -198,7 +202,7 @@ def run_symbol(fa, source, sym, en, day):
                           % (en, tf, S.iran(day_start, "%d %b %Y")),
                           view, sess, items)
 
-        last = day_evs[-1] if day_evs else None
+        last = evs[-1] if evs else None
         cap = ["<b>%s — %s</b>" % (fa, TF_FA[tf]), ""]
         cap.append("<b>روند:</b> %s%s"
                    % ("صعودی ↑" if trends.get(tf) == "up" else
@@ -226,7 +230,7 @@ def run_symbol(fa, source, sym, en, day):
             sw = ST.swings(kks)
             evs = ST.breaks(kks, sw)
             obs = ST.order_blocks(kks, evs)
-            pb_at = {p["i"] for p in ST.propulsion(obs)}
+            pb_at = {p["i"] for p in ST.propulsion(obs, kks)}
             for g in ST.fvgs(kks):
                 if g["t"] >= week_start and ST.mitigated_at(kks, g["i"], g["bot"], g["top"]) is None:
                     alive.append(("FVG", tf, g["bot"], g["top"], g["dir"], g["t"]))
@@ -234,6 +238,17 @@ def run_symbol(fa, source, sym, en, day):
                 if ob["t"] >= week_start and ST.mitigated_at(kks, ob["break_i"], ob["bot"], ob["top"]) is None:
                     alive.append(("PB" if ob["i"] in pb_at else "OB", tf,
                                   ob["bot"], ob["top"], ob["dir"], ob["t"]))
+        # A gap on the hourly is the same gap on the four-hour, because the
+        # four-hour is folded from it. Printed twice it looks like two levels.
+        order = {tf: i for i, tf in enumerate(TFS)}
+        alive.sort(key=lambda a: (-order[a[1]], a[2]))
+        kept = []
+        for it in alive:
+            dup = any(k[0] == it[0] and k[4] == it[4]
+                      and k[2] <= it[3] and it[2] <= k[3] for k in kept)
+            if not dup:
+                kept.append(it)
+        alive = kept
         alive.sort(key=lambda a: abs((a[2] + a[3]) / 2 - price))
         body = ["🗓 <b>%s — هفت روز گذشته</b>" % fa, "",
                 "سطح‌هایی که هنوز دست‌نخورده‌اند، نزدیک‌ترین به قیمت اول:", ""]
