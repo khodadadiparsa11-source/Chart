@@ -1,9 +1,20 @@
 name: feed probe
 
-# Manual only. This exists to answer one question -- is there a free gold feed
-# that carries volume -- and it will be deleted once that is settled.
+# Manual only, and deliberately two different questions behind one button:
+# "feed" asks which ticker matches the chart he actually trades, "clock" sends
+# one picture so he can check the time written on it against his own screen.
 on:
   workflow_dispatch:
+    inputs:
+      what:
+        description: 'feed = compare tickers · clock = send one test picture'
+        type: choice
+        options: [feed, clock]
+        default: feed
+      symbol:
+        description: 'clock only — which pair (default BTCUSDT)'
+        type: string
+        default: ''
   push:
     paths:
       - 'bot/probe_feed.py'
@@ -17,4 +28,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python bot/probe_feed.py
+      - run: pip install -q -r bot/requirements.txt
+      - name: feed
+        if: ${{ inputs.what != 'clock' }}
+        run: python bot/probe_feed.py
+      - name: clock
+        if: ${{ inputs.what == 'clock' }}
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CLOCK_SYMBOL: ${{ inputs.symbol }}
+        run: python bot/probe_clock.py
