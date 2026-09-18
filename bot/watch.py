@@ -49,11 +49,13 @@ A score is a ranking, not a probability. Nothing here has been backtested.
 """
 
 import concurrent.futures
+import datetime
 import io
 import json
 import os
 import re
 import time
+import zoneinfo
 import urllib.parse
 import urllib.request
 
@@ -477,6 +479,31 @@ def score(z, agree, delta_ratio):
 # ---------------------------------------------------------------- the image
 
 
+TEHRAN = zoneinfo.ZoneInfo("Asia/Tehran")
+
+
+def clock(ms, fmt="%H:%M"):
+    """A candle's open time on his clock, not the exchange's.
+
+    Binance stamps everything UTC and he reads Tehran; an alert that names a
+    candle he then cannot find on his own chart is worse than one that names no
+    candle at all.
+    """
+    return datetime.datetime.fromtimestamp(ms / 1000, TEHRAN).strftime(fmt)
+
+
+def stamp(ms):
+    """The same time, carrying its date whenever it is not today's.
+
+    A four-hour zone can be a day or two old by the time it passes every gate,
+    and a bare "17:45" would send him looking at the wrong candle. Today's
+    zones stay short, because there the date is only noise.
+    """
+    when = datetime.datetime.fromtimestamp(ms / 1000, TEHRAN)
+    today = datetime.datetime.now(TEHRAN).date()
+    return when.strftime("%H:%M" if when.date() == today else "%m-%d %H:%M")
+
+
 def draw(symbol, ks, z, pts, agree_tfs):
     """Candles, volume, and a box around the zone. Returns PNG bytes or None."""
     try:
@@ -522,6 +549,14 @@ def draw(symbol, ks, z, pts, agree_tfs):
     ax.add_patch(Rectangle((zs - 0.5, z["bot"]), len(view) - zs, z["top"] - z["bot"],
                            facecolor=edge, alpha=0.13, edgecolor=edge,
                            linewidth=1.6, zorder=4))
+    # The base's own clock time, at the left edge of the box where the zone
+    # begins. He asked for it so he can find the same candle on his own chart
+    # -- without it the picture says "somewhere in the last forty candles".
+    ax.annotate(clock(view[zs]["t"]), xy=(zs - 0.5, z["bot"]),
+                xytext=(0, -12), textcoords="offset points", ha="left",
+                color=bg, fontsize=9, fontweight="bold", zorder=6,
+                bbox=dict(boxstyle="round,pad=0.25", fc=edge, ec="none"))
+
     # The number sits at the right edge, clear of the candles: a tight base is
     # a thin band and a label on top of it hides the very thing it points at.
     ax.annotate("%d/10" % round(pts), xy=(len(view) - 1, z["top"]),
@@ -538,7 +573,13 @@ def draw(symbol, ks, z, pts, agree_tfs):
                  color="#e6edf3", fontsize=12, fontweight="bold", loc="left", pad=10)
     ax.set_ylabel("price", color="#8892a0", fontsize=8)
     av.set_ylabel("vol", color="#8892a0", fontsize=8)
-    av.set_xlabel("last %d candles" % len(view), color="#8892a0", fontsize=8)
+    # Clock along the bottom rather than "last N candles", which told him
+    # nothing he could match against his own chart.
+    step = max(1, len(view) // 6)
+    ticks = list(range(0, len(view), step))
+    av.set_xticks(ticks)
+    av.set_xticklabels([clock(view[i]["t"]) for i in ticks], fontsize=7.5)
+    av.set_xlabel("Tehran time", color="#8892a0", fontsize=8)
     ax.set_xlim(-1, len(view))
 
     buf = io.BytesIO()
@@ -773,7 +814,8 @@ def caption(symbol, z, pts, agree, price):
     away = abs(price - edge) / price * 100
     return (
         "{a} <b>{sym}</b> — {kind}\n"
-        "امتیاز <b>{pts}/10</b> · تایم‌فریم <b>{tf}</b>\n\n"
+        "امتیاز <b>{pts}/10</b> · تایم‌فریم <b>{tf}</b>\n"
+        "کندل بیس: <b>{when}</b> (به وقت ایران)\n\n"
         "محدوده <code>{bot} — {top}</code>\n"
         "قیمت الان <code>{price}</code> — <b>{away:.2f}٪</b> فاصله تا محدوده\n\n"
         "بیس: <b>{bars}</b> کندل، حجم <b>{bvol:.1f}x</b> نرمال، طول <b>{tight:.0%}</b> نرمال\n"
@@ -787,6 +829,7 @@ def caption(symbol, z, pts, agree, price):
         "<i>امتیاز یک رتبه‌بندی است، نه احتمال. هیچ بک‌تستی پشتش نیست. "
         "ممکن است قیمت هرگز به این محدوده برنگردد.</i>"
     ).format(a=arrow, sym=symbol, kind=kind, pts=int(round(pts)), tf=z["tf"],
+             when=stamp(z["formed"]),
              bot=fmt(z["bot"]), top=fmt(z["top"]), price=fmt(price),
              bars=z["bars"], bvol=z["bvol"], tight=z["tight"],
              exr=z["exr"], exv=z["exv"], push=z["push"], flow=flow, dp=abs(d) * 100,
@@ -809,7 +852,7 @@ def review_caption(symbol, z, pts, agree, price, why):
         "🔍 <b>برای بررسی — سیگنال نیست</b>\n\n"
         "<b>{sym}</b> · {tf} · {kind}\n"
         "محدوده <code>{bot} — {top}</code> · <b>{away:.2f}٪</b> فاصله\n"
-        "امتیاز {pts}/10\n\n"
+        "امتیاز {pts}/10 · کندل بیس <b>{when}</b>\n\n"
         "<b>چرا رد شد:</b> {why}\n"
         "بیس: {bars} کندل، حجم <b>{bvol:.1f}x</b>، طول {tight:.0%} نرمال\n"
         "خروج: طول {exr:.1f}x، حجم {exv:.1f}x، فشار {push:.1f} برابر\n"
@@ -820,7 +863,7 @@ def review_caption(symbol, z, pts, agree, price, why):
     ).format(sym=symbol, tf=z["tf"], kind=kind, bot=fmt(z["bot"]),
              top=fmt(z["top"]), away=away, pts=int(round(pts)), why=why,
              bars=z["bars"], bvol=z["bvol"], tight=z["tight"], exr=z["exr"],
-             exv=z["exv"], push=z["push"], d=d)
+             exv=z["exv"], push=z["push"], d=d, when=stamp(z["formed"]))
 
 
 def main():
